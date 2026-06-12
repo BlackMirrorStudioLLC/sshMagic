@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Intentionally NOT sandboxed: sshMagic shells out to /usr/bin/ssh and reads
+      ~/.ssh/config and the user's keys. The App Sandbox would block both. If you
+      later ship via the Mac App Store, you'd need com.apple.security.app-sandbox
+      plus the network-client + Downloads/ssh exceptions and an in-process SSH
+      stack instead of the system binary.
+    -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>
