@@ -1,0 +1,172 @@
+# sshMagic CI
+#
+# sshMagic is a macOS SwiftUI app (SwiftPM). The build/test/lint jobs must run on
+# a macOS runner — the app links AppKit/SwiftUI/Network and SwiftTerm's Metal
+# renderer, none of which exist on Linux. The text-only checks (unicode scan,
+# shellcheck, workflow audit) are arch-independent and run on Linux, which spins
+# up faster and is cheaper than a macOS runner.
+#
+# Jobs:
+#   build-test  swift build + swift test (the base gate)
+#   bundle      assemble + ad-hoc sign sshMagic.app (smoke-tests the packaging)
+#   swiftlint   SwiftLint static analysis
+#   format      swift-format lint (style consistency)
+#   unicode     scan sources for Trojan-Source / invisible Unicode
+#   shellcheck  lint the project's shell scripts
+#   zizmor      security audit of these GitHub Actions workflows
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# A newer push to the same ref makes in-flight runs obsolete — cancel them.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build + test (macOS)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode
+        # Pin to a known Xcode so the Swift toolchain is reproducible across
+        # runner image updates.
+        run: sudo xcode-select -switch /Applications/Xcode_16.4.app
+
+      - name: Verify toolchain
+        run: swift --version
+
+      - name: Build
+        run: swift build -v
+
+      - name: Test
+        run: swift test -v
+
+  bundle:
+    name: Bundle .app (macOS)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode_16.4.app
+
+      - name: Assemble + ad-hoc sign the app bundle
+        # Exercises scripts/bundle_app.sh end to end (build → layout → Info.plist
+        # → codesign) so packaging breakage is caught in CI, not at release time.
+        run: ./scripts/bundle_app.sh release
+
+      - name: Verify the signature
+        run: codesign --verify --deep --strict --verbose=2 dist/sshMagic.app
+
+  swiftlint:
+    name: SwiftLint
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Lint
+        # --strict promotes warnings to errors so the gate is meaningful; the
+        # ruleset in .swiftlint.yml is tuned to avoid noise on this codebase.
+        run: swiftlint lint --strict --reporter github-actions-logging
+
+  format:
+    name: swift-format
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Install swift-format
+        run: brew install swift-format
+
+      - name: Check formatting
+        # Lint mode: report style violations without rewriting files. Config in
+        # .swift-format. Non-zero exit on any finding.
+        run: swift-format lint --strict --recursive Sources Tests
+
+  unicode:
+    name: Unicode scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Scan for Trojan-Source / invisible Unicode
+        # Guards against CVE-2021-42574: bidi controls / zero-width characters
+        # that make source render differently than it compiles.
+        run: python3 .github/scripts/check-unicode.py
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Lint shell scripts
+        run: |
+          set -euo pipefail
+          mapfile -t scripts < <(git ls-files '*.sh')
+          if [ "${#scripts[@]}" -eq 0 ]; then
+            echo "No shell scripts — nothing to lint."
+            exit 0
+          fi
+          echo "Linting: ${scripts[*]}"
+          shellcheck "${scripts[@]}"
+
+  zizmor:
+    name: zizmor (workflow audit)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install zizmor
+        run: pip install zizmor
+
+      - name: Audit workflows
+        # Offline audit: deterministic, no token/network. Flags injection,
+        # over-broad permissions, unpinned actions, etc.
+        run: zizmor --offline .github/workflows/
