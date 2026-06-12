@@ -1,0 +1,67 @@
+# SwiftLint configuration for sshMagic.
+#
+# Tuned to stay quiet on this codebase while still catching real problems. Run
+# locally with `swiftlint` (install: `brew install swiftlint`).
+
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+  - dist
+
+# Rules that fire on legitimate, readable patterns in this app are disabled.
+disabled_rules:
+  - todo                       # tracked elsewhere
+  - trailing_comma             # collection trailing commas are fine
+  - multiple_closures_with_trailing_closure  # common in SwiftUI
+  # swift-format owns brace placement and wraps the opening brace onto its own
+  # line for multi-line conditions; SwiftLint's opening_brace rejects that. Let
+  # the formatter be authoritative so the two tools don't fight.
+  - opening_brace
+  # Likewise, swift-format wraps a long closure parameter list onto the line
+  # after the brace; SwiftLint's closure_parameter_position wants it on the brace
+  # line. Same resolution: defer to swift-format.
+  - closure_parameter_position
+
+opt_in_rules:
+  - empty_count
+  - force_unwrapping
+  - implicitly_unwrapped_optional
+  - overridden_super_call
+  - redundant_nil_coalescing
+
+line_length:
+  warning: 120
+  error: 160
+  ignores_comments: true
+  ignores_urls: true
+
+type_body_length:
+  warning: 350
+  error: 500
+
+file_length:
+  warning: 500
+  error: 800
+
+function_body_length:
+  warning: 80
+  error: 120
+
+identifier_name:
+  # Short names like `r`, `g`, `b` (colour components) and `s` (loop var) read
+  # fine in context.
+  min_length:
+    warning: 1
+  excluded:
+    - id
+    - r
+    - g
+    - b
+    - c
+    - s
+
+cyclomatic_complexity:
+  warning: 15

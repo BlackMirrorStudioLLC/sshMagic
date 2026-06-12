@@ -1,0 +1,23 @@
+# SwiftPM
+.build/
+.swiftpm/
+# Package.resolved is intentionally committed (this is an app, not a library) so
+# everyone builds the exact same SwiftTerm revision.
+
+# Build output
+dist/
+*.app
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+.idea/
+.vscode/

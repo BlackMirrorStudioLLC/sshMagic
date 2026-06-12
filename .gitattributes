@@ -1,0 +1,14 @@
+# Normalize line endings to LF on commit.
+* text=auto eol=lf
+
+*.swift  text
+*.yml    text
+*.yaml   text
+*.json   text
+*.md     text
+*.sh     text eol=lf
+*.plist  text
+
+# Binary assets
+*.png    binary
+*.icns   binary
