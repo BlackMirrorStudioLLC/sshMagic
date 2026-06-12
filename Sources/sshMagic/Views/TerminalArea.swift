@@ -34,7 +34,7 @@ struct TerminalArea: View {
             Theme.terminalBG.ignoresSafeArea()
             if let session = activeSession {
                 ForEach(app.sessions) { s in
-                    SSHTerminalView(session: s)
+                    SSHTerminalView(session: s, isActive: s.id == session.id)
                         .opacity(s.id == session.id ? 1 : 0)
                         .allowsHitTesting(s.id == session.id)
                 }
