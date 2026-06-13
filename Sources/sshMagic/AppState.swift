@@ -64,15 +64,48 @@ final class AppState: ObservableObject {
 
     // MARK: Connecting
 
-    /// Entry point for "connect to this host". If we already know the login
-    /// (remembered this session, or saved with a username), connect straight
-    /// through; otherwise raise the credential sheet.
+    /// Entry point for "connect to this host". If we already know the login,
+    /// connect straight through — but a *saved password* is unlocked with Touch
+    /// ID first (falling back to typing if the fingerprint fails). Hosts with no
+    /// known login raise the credential sheet.
     func requestConnect(to host: Host) {
-        if let credentials = resolvedCredentials(for: host) {
-            openSession(host: host, username: credentials.username, password: credentials.password)
-        } else {
-            pendingConnect = host
+        // Already unlocked this run.
+        if let cred = sessionCredentials[host.id] {
+            openSession(host: host, username: cred.username, password: cred.password)
+            return
         }
+
+        let knownUsername =
+            savedHosts.first(where: { $0.id == host.id })?.username ?? host.username
+        guard let username = knownUsername, !username.isEmpty else {
+            pendingConnect = host
+            return
+        }
+
+        let account = KeychainStore.account(username: username, hostID: host.id)
+        guard KeychainStore.hasPassword(account: account) else {
+            // Username known, no usable saved password — connect and let ssh
+            // prompt (or, for a legacy item, the sheet will re-save it).
+            cacheAndOpen(host: host, username: username, password: nil)
+            return
+        }
+
+        // A saved password exists. Reading it prompts for Touch ID (when the item
+        // is biometric-protected); on cancel/failure we fall back to typing.
+        Task { @MainActor in
+            let stored = await KeychainStore.password(
+                account: account, prompt: "Unlock the saved password for \(host.displayName)")
+            if let stored {
+                self.cacheAndOpen(host: host, username: username, password: stored)
+            } else {
+                self.pendingConnect = host
+            }
+        }
+    }
+
+    private func cacheAndOpen(host: Host, username: String, password: String?) {
+        sessionCredentials[host.id] = Credentials(username: username, password: password)
+        openSession(host: host, username: username, password: password)
     }
 
     /// Force the credential sheet even when a login is known ("Connect As…").
@@ -109,19 +142,6 @@ final class AppState: ObservableObject {
         }
         if let u = host.username, !u.isEmpty { return u }
         return lastUsername
-    }
-
-    /// Resolve a known login without prompting, or nil if we must ask.
-    private func resolvedCredentials(for host: Host) -> Credentials? {
-        if let cached = sessionCredentials[host.id] { return cached }
-
-        let knownUsername =
-            savedHosts.first(where: { $0.id == host.id })?.username
-            ?? host.username
-        guard let username = knownUsername, !username.isEmpty else { return nil }
-
-        let acct = KeychainStore.account(username: username, hostID: host.id)
-        return Credentials(username: username, password: KeychainStore.password(account: acct))
     }
 
     /// Open the actual terminal tab with a resolved login and focus it.
