@@ -43,7 +43,13 @@ enum Theme {
             terminal.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         }
         terminal.nativeBackgroundColor = NSColor(srgbRed: 0.05, green: 0.05, blue: 0.07, alpha: 1)
-        terminal.nativeForegroundColor = NSColor(srgbRed: 0.85, green: 0.87, blue: 0.91, alpha: 1)
+        // Brighter foreground so plain output reads crisp, not muddy grey.
+        terminal.nativeForegroundColor = NSColor(srgbRed: 0.92, green: 0.94, blue: 0.98, alpha: 1)
+        // Bold text uses the brighter palette variants.
+        terminal.useBrightColors = true
+        // Accent cursor + selection to match the app's electric-blue theme.
+        terminal.caretColor = NSColor(srgbRed: 0.45, green: 0.78, blue: 1.0, alpha: 1)
+        terminal.selectedTextBackgroundColor = NSColor(srgbRed: 0.45, green: 0.78, blue: 1.0, alpha: 0.30)
         terminal.installColors(ansiPalette)
     }
 
@@ -54,21 +60,23 @@ enum Theme {
             SwiftTerm.Color(red: UInt16(r * 257), green: UInt16(g * 257), blue: UInt16(b * 257))
         }
         return [
-            c(0x1b, 0x1d, 0x24),  // black
-            c(0xe0, 0x6c, 0x75),  // red
-            c(0x98, 0xc3, 0x79),  // green
+            // Normal: a vivid take on the One Dark palette.
+            c(0x21, 0x25, 0x2b),  // black
+            c(0xef, 0x59, 0x6f),  // red
+            c(0x89, 0xca, 0x78),  // green
             c(0xe5, 0xc0, 0x7b),  // yellow
-            c(0x61, 0xaf, 0xef),  // blue
-            c(0xc6, 0x78, 0xdd),  // magenta
-            c(0x56, 0xb6, 0xc2),  // cyan
+            c(0x5c, 0xb3, 0xff),  // blue
+            c(0xd5, 0x5f, 0xde),  // magenta
+            c(0x48, 0xc6, 0xd8),  // cyan
             c(0xab, 0xb2, 0xbf),  // white
+            // Bright: genuinely brighter/more saturated so bold output pops.
             c(0x5c, 0x63, 0x70),  // bright black
-            c(0xe0, 0x6c, 0x75),  // bright red
-            c(0x98, 0xc3, 0x79),  // bright green
-            c(0xe5, 0xc0, 0x7b),  // bright yellow
-            c(0x61, 0xaf, 0xef),  // bright blue
-            c(0xc6, 0x78, 0xdd),  // bright magenta
-            c(0x56, 0xb6, 0xc2),  // bright cyan
+            c(0xff, 0x7a, 0x90),  // bright red
+            c(0xa6, 0xe2, 0x8c),  // bright green
+            c(0xff, 0xe2, 0x8a),  // bright yellow
+            c(0x82, 0xc8, 0xff),  // bright blue
+            c(0xe6, 0x8a, 0xff),  // bright magenta
+            c(0x6c, 0xe0, 0xf0),  // bright cyan
             c(0xff, 0xff, 0xff),  // bright white
         ]
     }()
