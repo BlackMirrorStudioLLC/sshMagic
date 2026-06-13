@@ -21,6 +21,8 @@ final class AppState: ObservableObject {
     @Published var pendingConnect: Host?
     /// Sessions whose SFTP file browser is currently visible.
     @Published var filesVisible: Set<TerminalSession.ID> = []
+    /// Whether the remote-monitoring stats bar is shown under terminals.
+    @Published var showStatsBar = true
 
     private let savedHostsURL: URL
     private var cancellables = Set<AnyCancellable>()
@@ -151,6 +153,16 @@ final class AppState: ObservableObject {
         let session = TerminalSession(host: resolved, password: password)
         sessions.append(session)
         selectedSessionID = session.id
+        if showStatsBar { session.stats.start() }
+    }
+
+    /// Show or hide the remote-monitoring bar, starting/stopping the per-session
+    /// pollers so they only run while the bar is visible.
+    func toggleStatsBar() {
+        showStatsBar.toggle()
+        for session in sessions {
+            if showStatsBar { session.stats.start() } else { session.stats.stop() }
+        }
     }
 
     /// Show or hide the SFTP file browser for a session.
@@ -165,6 +177,7 @@ final class AppState: ObservableObject {
     func closeSession(_ session: TerminalSession) {
         guard let index = sessions.firstIndex(where: { $0.id == session.id }) else { return }
         session.filePanel.disconnect()
+        session.stats.stop()
         filesVisible.remove(session.id)
         sessions.remove(at: index)
         if selectedSessionID == session.id {

@@ -29,6 +29,10 @@ final class TerminalSession: ObservableObject, Identifiable {
     /// AppState while this just holds the per-session SFTP state.
     let filePanel: FilePanelModel
 
+    /// Live remote-vitals monitor (CPU/RAM/net/disk), polled over the same
+    /// multiplexed connection as the terminal and SFTP.
+    let stats: RemoteStatsMonitor
+
     init(host: Host, password: String? = nil) {
         self.host = host
         self.password = password
@@ -37,5 +41,6 @@ final class TerminalSession: ObservableObject, Identifiable {
         let control = "/tmp/sshmagic-\(UUID().uuidString.prefix(8)).sock"
         self.controlPath = control
         self.filePanel = FilePanelModel(host: host, controlPath: control)
+        self.stats = RemoteStatsMonitor(host: host, controlPath: control)
     }
 }
