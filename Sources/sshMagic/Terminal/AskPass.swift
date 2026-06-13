@@ -28,7 +28,10 @@ enum AskPass {
                 attributes: [.posixPermissions: 0o700])
 
             let pwURL = dir.appendingPathComponent("pw")
-            try Data(password.utf8).write(to: pwURL, options: .completeFileProtection)
+            // NOTE: do not use `.completeFileProtection` here — that iOS data-
+            // protection class fails with EPERM on macOS. The 0600 file inside a
+            // 0700 directory is the real protection.
+            try Data(password.utf8).write(to: pwURL, options: .atomic)
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pwURL.path)
 
             // The helper prints the password then removes the file, so a single
