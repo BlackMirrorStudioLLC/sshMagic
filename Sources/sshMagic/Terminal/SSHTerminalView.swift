@@ -19,9 +19,12 @@ struct SSHTerminalView: NSViewRepresentable {
         view.processDelegate = context.coordinator
         Theme.apply(to: view)
 
-        // Make detected URLs (and OSC 8 hyperlinks) clickable on a plain click,
-        // underlined on hover. SwiftTerm's default delegate opens them via
-        // NSWorkspace, so nothing else is needed for links to work.
+        // Make detected URLs (and OSC 8 hyperlinks) clickable: underline on
+        // hover, open on a plain click (via SwiftTerm's default NSWorkspace
+        // delegate). NOTE: `.hover` is the only mode that activates *implicit*
+        // (auto-detected plain-text) URLs — `.always`/`.alwaysWithModifier` only
+        // apply to explicit OSC 8 hyperlinks, so a plain `https://…` printed by
+        // the shell would not be clickable under those.
         view.linkHighlightMode = .hover
 
         // Right-click menu for copy/paste/select-all — discoverable and always
@@ -41,8 +44,16 @@ struct SSHTerminalView: NSViewRepresentable {
         view.menu = menu
 
         // ssh options. KeepAlive surfaces dead connections quickly so a tab
-        // doesn't hang forever on a dropped link.
-        var options = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]
+        // doesn't hang forever on a dropped link. ControlMaster publishes this
+        // authenticated connection on a socket so the SFTP file browser can
+        // multiplex over it (no second authentication); ControlPersist keeps it
+        // briefly alive across a momentary terminal hiccup.
+        var options = [
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPath=\(session.controlPath)",
+            "-o", "ControlPersist=120",
+        ]
 
         // Inherit the login environment but force a sane TERM the remote honors.
         var env = Terminal.getEnvironmentVariables(termName: "xterm-256color")

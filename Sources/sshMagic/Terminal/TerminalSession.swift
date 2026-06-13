@@ -12,6 +12,12 @@ final class TerminalSession: ObservableObject, Identifiable {
     /// terminal" (or use a key).
     let password: String?
 
+    /// Unix socket for SSH connection multiplexing. The terminal's ssh opens
+    /// this as the master; the SFTP file browser reuses it, so the file panel
+    /// rides the terminal's already-authenticated connection instead of
+    /// authenticating again (which would fail for interactively-typed passwords).
+    let controlPath: String
+
     /// Live title — starts as the host label, updated from the shell's OSC title
     /// sequences (so it tracks `ssh`, then the remote shell's prompt title).
     @Published var title: String
@@ -27,6 +33,9 @@ final class TerminalSession: ObservableObject, Identifiable {
         self.host = host
         self.password = password
         self.title = host.displayName
-        self.filePanel = FilePanelModel(host: host, password: password)
+        // Short path — AF_UNIX socket paths are capped near 104 chars.
+        let control = "/tmp/sshmagic-\(UUID().uuidString.prefix(8)).sock"
+        self.controlPath = control
+        self.filePanel = FilePanelModel(host: host, controlPath: control)
     }
 }

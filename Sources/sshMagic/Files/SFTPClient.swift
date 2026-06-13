@@ -1,82 +1,57 @@
 import Foundation
+import OSLog
 
-/// Talks SFTP to a host using the system `ssh`/`sftp` binaries.
-///
-/// On first use it opens a backgrounded **master** connection (SSH connection
-/// multiplexing): that single connection authenticates once — via the same
-/// askpass/Keychain password path as the terminal, or a key — and every
-/// subsequent `sftp` batch op rides over it with no re-auth and no new TCP
-/// handshake. That's what makes browsing feel instant.
+/// Talks SFTP to a host by **reusing the terminal's authenticated SSH
+/// connection** via connection multiplexing. The terminal's `ssh` is the master
+/// (`ControlMaster=auto` on a shared `ControlPath`); every `sftp` op here rides
+/// that socket with `ControlMaster=no`, so it never re-authenticates. That's why
+/// it works regardless of how you logged in — saved password, a fingerprint, a
+/// key, or a password you typed straight into the terminal.
 actor SFTPClient {
     enum SFTPError: LocalizedError {
-        case connection(String)
+        case notConnected
         case command(String)
 
         var errorDescription: String? {
             switch self {
-            case .connection(let m): return "Couldn't open SFTP connection: \(m)"
-            case .command(let m): return m
+            case .notConnected:
+                return "Waiting for the SSH session — connect the terminal, then Retry."
+            case .command(let message):
+                return message
             }
         }
     }
 
-    /// Result of running a helper subprocess.
     private struct ProcessResult {
         let status: Int32
         let stdout: String
         let stderr: String
     }
 
-    private let host: Host
-    private let password: String?
-    private let controlPath: String
-    /// True once the multiplexed control connection is established.
-    private var controlReady = false
+    private static let log = Logger(subsystem: "com.blackmirrorstudio.sshmagic", category: "sftp")
 
-    init(host: Host, password: String?) {
+    private let host: Host
+    private let controlPath: String
+
+    init(host: Host, controlPath: String) {
         self.host = host
-        self.password = password
-        // Keep the socket path short — AF_UNIX paths are capped near 104 chars.
-        self.controlPath = "/tmp/sshmagic-\(UUID().uuidString.prefix(8)).sock"
+        self.controlPath = controlPath
     }
 
     // MARK: Public API
 
-    /// Establish the master connection (idempotent).
+    /// Wait for the terminal's master connection to come up (it may still be
+    /// authenticating — e.g. the user is typing a password). Throws if it never
+    /// appears within the window so the panel can show Retry.
     func connect() async throws {
-        guard !controlReady else { return }
-
-        var env: [String: String] = [:]
-        var cleanup: URL?
-        if let password, !password.isEmpty, let askpass = AskPass.make(password: password) {
-            for entry in askpass.environment {
-                if let eq = entry.firstIndex(of: "=") {
-                    env[String(entry[..<eq])] = String(entry[entry.index(after: eq)...])
-                }
-            }
-            cleanup = askpass.cleanupURL
+        for _ in 0..<25 {
+            if await controlSocketIsUp() { return }
+            if Task.isCancelled { return }
+            try? await Task.sleep(nanoseconds: 800_000_000)
         }
-        defer { AskPass.cleanup(cleanup) }
-
-        let args =
-            [
-                "-f", "-N", "-M",
-                "-o", "ControlPath=\(controlPath)",
-                "-o", "ControlPersist=120",
-                "-o", "ControlMaster=yes",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ConnectTimeout=12",
-                "-o", "ServerAliveInterval=15",
-            ] + host.sshArguments
-
-        let result = try await Self.run("/usr/bin/ssh", args, environment: env)
-        guard result.status == 0 else {
-            throw SFTPError.connection(result.stderr.isEmpty ? "ssh exited \(result.status)" : result.stderr)
-        }
-        controlReady = true
+        throw SFTPError.notConnected
     }
 
-    /// The remote login/home directory.
     func home() async throws -> String {
         let out = try await runSFTP("pwd")
         // sftp prints: "Remote working directory: /home/astro"
@@ -88,18 +63,15 @@ actor SFTPClient {
         return "/"
     }
 
-    /// List a directory.
     func list(_ path: String) async throws -> [RemoteFile] {
         let out = try await runSFTP("ls -la \(Self.quote(path))")
         return RemoteFile.parse(lsOutput: out)
     }
 
-    /// Download a remote file to a local URL.
     func download(remotePath: String, to local: URL) async throws {
         _ = try await runSFTP("get \(Self.quote(remotePath)) \(Self.quote(local.path))")
     }
 
-    /// Upload a local file into a remote directory.
     func upload(local: URL, toRemoteDir remoteDir: String) async throws {
         let dest =
             remoteDir.hasSuffix("/")
@@ -108,10 +80,33 @@ actor SFTPClient {
         _ = try await runSFTP("put \(Self.quote(local.path)) \(Self.quote(dest))")
     }
 
-    /// Tear down the master connection.
+    /// Upload a local file to an exact remote path (used to save edits back).
+    func upload(local: URL, toRemotePath remotePath: String) async throws {
+        _ = try await runSFTP("put \(Self.quote(local.path)) \(Self.quote(remotePath))")
+    }
+
+    /// Delete a file or directory (recursively). Runs `rm -rf` over the master,
+    /// so it handles non-empty directories too — callers should confirm first.
+    func remove(_ remotePath: String) async throws {
+        guard await controlSocketIsUp() else { throw SFTPError.notConnected }
+        // Single-quote for the remote shell; `--` stops option injection.
+        let escaped = remotePath.replacingOccurrences(of: "'", with: "'\\''")
+        let result = try await Self.run(
+            "/usr/bin/ssh",
+            [
+                "-o", "ControlPath=\(controlPath)",
+                "-o", "ControlMaster=no",
+                "-o", "BatchMode=yes",
+                host.userAtHost,
+                "rm -rf -- '\(escaped)'",
+            ])
+        guard result.status == 0 else {
+            throw SFTPError.command(result.stderr.isEmpty ? "Delete failed." : result.stderr)
+        }
+    }
+
+    /// Close the multiplexed master (called when the whole tab closes).
     func disconnect() async {
-        guard controlReady else { return }
-        controlReady = false
         _ = try? await Self.run(
             "/usr/bin/ssh",
             ["-o", "ControlPath=\(controlPath)", "-O", "exit"] + host.sshArguments)
@@ -119,22 +114,31 @@ actor SFTPClient {
 
     // MARK: Internals
 
-    /// Run one or more sftp commands over the master in batch mode.
-    private func runSFTP(_ command: String) async throws -> String {
-        if !controlReady { try await connect() }
+    /// True when the terminal's master socket is live (`ssh -O check`). This is a
+    /// fast local check — it doesn't open a network connection.
+    private func controlSocketIsUp() async -> Bool {
+        let result = try? await Self.run(
+            "/usr/bin/ssh",
+            ["-o", "ControlPath=\(controlPath)", "-O", "check"] + host.sshArguments)
+        return result?.status == 0
+    }
 
-        var args = [
+    /// Run an sftp command over the existing master (no auth, batch mode).
+    private func runSFTP(_ command: String) async throws -> String {
+        guard await controlSocketIsUp() else { throw SFTPError.notConnected }
+
+        let args = [
             "-o", "ControlPath=\(controlPath)",
             "-o", "ControlMaster=no",
             "-o", "BatchMode=yes",
+            "-b", "-", host.userAtHost,
         ]
-        // sftp takes the port with -P (capital), unlike ssh's -p.
-        if host.port != 22 { args += ["-P", String(host.port)] }
-        args += ["-b", "-", host.userAtHost]
-
         let result = try await Self.run("/usr/bin/sftp", args, input: command + "\n")
         guard result.status == 0 else {
-            throw SFTPError.command(result.stderr.isEmpty ? result.stdout : result.stderr)
+            let detail = result.stderr.isEmpty ? result.stdout : result.stderr
+            Self.log.error(
+                "sftp '\(command, privacy: .public)' failed (\(result.status)): \(detail, privacy: .public)")
+            throw SFTPError.command(detail)
         }
         return result.stdout
     }
@@ -142,7 +146,9 @@ actor SFTPClient {
     /// Quote a path for an sftp command line (sftp does its own arg parsing, not
     /// a shell): wrap in double quotes, escaping `\` and `"`.
     private static func quote(_ path: String) -> String {
-        let escaped = path.replacingOccurrences(of: "\\", with: "\\\\")
+        let escaped =
+            path
+            .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
     }
@@ -151,19 +157,13 @@ actor SFTPClient {
     private static func run(
         _ executable: String,
         _ args: [String],
-        input: String? = nil,
-        environment: [String: String] = [:]
+        input: String? = nil
     ) async throws -> ProcessResult {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = args
-                if !environment.isEmpty {
-                    var merged = ProcessInfo.processInfo.environment
-                    for (key, value) in environment { merged[key] = value }
-                    process.environment = merged
-                }
                 let outPipe = Pipe()
                 let errPipe = Pipe()
                 let inPipe = Pipe()
