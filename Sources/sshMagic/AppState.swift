@@ -250,14 +250,18 @@ final class AppState: ObservableObject {
 
         // A newly-entered password is stored under the edited login; a blank one
         // leaves an unchanged login's existing password in place.
-        if let password, !password.isEmpty, let username = edited.username, !username.isEmpty {
+        let passwordChanged = !(password ?? "").isEmpty
+        if passwordChanged, let username = edited.username, !username.isEmpty {
             KeychainStore.setPassword(
-                password, account: KeychainStore.account(username: username, hostID: edited.id))
+                password ?? "", account: KeychainStore.account(username: username, hostID: edited.id))
         }
 
-        // Drop cached creds so the next connect re-resolves them.
-        sessionCredentials[original.id] = nil
-        sessionCredentials[edited.id] = nil
+        // Only drop cached creds when the login actually changed — a display-name
+        // edit shouldn't force a spurious Touch ID re-prompt next connect.
+        if !accountUnchanged || passwordChanged {
+            sessionCredentials[original.id] = nil
+            sessionCredentials[edited.id] = nil
+        }
     }
 
     func removeSavedHost(_ host: Host) {

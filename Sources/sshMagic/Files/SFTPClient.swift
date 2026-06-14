@@ -32,6 +32,9 @@ actor SFTPClient {
 
     private let host: Host
     private let controlPath: String
+    /// When the control socket was last confirmed live, to skip redundant
+    /// `ssh -O check` forks on back-to-back operations.
+    private var lastSocketOK: Date?
 
     init(host: Host, controlPath: String) {
         self.host = host
@@ -95,6 +98,12 @@ actor SFTPClient {
         guard trimmed.hasPrefix("/"), trimmed != "/" else {
             throw SFTPError.command("Refusing to delete a relative or root path.")
         }
+        // Reject control characters (e.g. an embedded newline a hostile server
+        // could sneak into a path) before building the remote command.
+        guard !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        else {
+            throw SFTPError.command("Refusing to delete a path with control characters.")
+        }
         guard await controlSocketIsUp() else { throw SFTPError.notConnected }
         // Single-quote for the remote shell; `--` stops option injection.
         let escaped = trimmed.replacingOccurrences(of: "'", with: "'\\''")
@@ -123,12 +132,17 @@ actor SFTPClient {
     // MARK: Internals
 
     /// True when the terminal's master socket is live (`ssh -O check`). This is a
-    /// fast local check — it doesn't open a network connection.
+    /// fast local check (no network), and the result is cached for a couple of
+    /// seconds so back-to-back operations (browse → list → transfer) don't each
+    /// fork an extra `ssh`.
     private func controlSocketIsUp() async -> Bool {
+        if let last = lastSocketOK, Date().timeIntervalSince(last) < 3 { return true }
         let result = try? await Self.run(
             "/usr/bin/ssh",
             ["-o", "ControlPath=\(controlPath)", "-O", "check"] + host.sshArguments)
-        return result?.status == 0
+        let up = result?.status == 0
+        lastSocketOK = up ? Date() : nil
+        return up
     }
 
     /// Run an sftp command over the existing master (no auth, batch mode).

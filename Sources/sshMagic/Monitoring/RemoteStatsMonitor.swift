@@ -24,14 +24,18 @@ final class RemoteStatsMonitor: ObservableObject {
     private static var instanceCount = 0
     private let stagger: TimeInterval
 
+    /// A sentinel that can't appear in `/proc` or `who` output, so a stray line
+    /// (e.g. `who` showing an `@host` suffix) can't be mistaken for a marker.
+    private static let marker = "@@SSHMAGIC_"
+
     /// One command that emits each `/proc` source under a marker we split on.
     private static let command = [
-        "echo @CPU", "head -1 /proc/stat",
-        "echo @MEM", "cat /proc/meminfo",
-        "echo @NET", "cat /proc/net/dev",
-        "echo @UP", "cat /proc/uptime",
-        "echo @DF", "df -P",
-        "echo @WHO", "who | wc -l",
+        "echo \(marker)CPU", "head -1 /proc/stat",
+        "echo \(marker)MEM", "cat /proc/meminfo",
+        "echo \(marker)NET", "cat /proc/net/dev",
+        "echo \(marker)UP", "cat /proc/uptime",
+        "echo \(marker)DF", "df -P",
+        "echo \(marker)WHO", "who | wc -l",
     ].joined(separator: "; ")
 
     init(host: Host, controlPath: String) {
@@ -83,8 +87,8 @@ final class RemoteStatsMonitor: ObservableObject {
         var current = ""
         for raw in output.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(raw)
-            if line.hasPrefix("@") {
-                current = String(line.dropFirst())
+            if line.hasPrefix(Self.marker) {
+                current = String(line.dropFirst(Self.marker.count))
                 sections[current] = []
             } else {
                 sections[current, default: []].append(line)

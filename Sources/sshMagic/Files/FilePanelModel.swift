@@ -159,6 +159,13 @@ final class FilePanelModel: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard let self else { return }
+                // If the temp copy is gone, the edit is over — stop the watcher
+                // and drop the session so they don't accumulate over a long tab.
+                guard FileManager.default.fileExists(atPath: session.localURL.path) else {
+                    session.stop()
+                    self.editSessions.removeAll { $0 === session }
+                    return
+                }
                 guard let modified = EditSession.modified(session.localURL),
                     modified > session.lastModified
                 else { continue }
