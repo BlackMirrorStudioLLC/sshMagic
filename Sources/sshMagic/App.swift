@@ -71,8 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard !(window.delegate is WindowCloseInterceptor) else { return }
         let interceptor = WindowCloseInterceptor()
-        // SwiftUI's delegate is always an NSObject; the cast lets us retain it.
-        interceptor.forwarding = window.delegate as? (NSWindowDelegate & NSObject)
+        interceptor.adopt(window.delegate)
         window.delegate = interceptor
         closeInterceptor = interceptor
     }
@@ -82,12 +81,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// sessions alive — instead of quitting, then forwards every other delegate call
 /// to SwiftUI's own window delegate so normal behavior is unaffected.
 final class WindowCloseInterceptor: NSObject, NSWindowDelegate {
-    // Strong, not weak: when we set ourselves as the window's delegate, the
-    // window drops its only strong reference to SwiftUI's original delegate.
-    // Holding it weakly would let it deallocate, silently breaking every window
-    // event SwiftUI handles (full-screen, state restoration, sheet sizing). We
-    // keep it alive for the lifetime of the app's single window.
-    var forwarding: (NSWindowDelegate & NSObject)?
+    // Strong reference to SwiftUI's original delegate. When we install ourselves
+    // as the window's delegate, the window drops its only strong hold on that
+    // object; without this it could deallocate, silently breaking every window
+    // event SwiftUI handles (full-screen, state restoration, sheet sizing).
+    //
+    // Typed as a bare NSObject (every NSWindow delegate is one) so retention
+    // never depends on a protocol cast succeeding; `forwarding` re-derives the
+    // NSWindowDelegate view for call forwarding.
+    private var retained: NSObject?
+    private var forwarding: NSWindowDelegate? { retained as? NSWindowDelegate }
+
+    /// Take over from SwiftUI's delegate, retaining it for forwarding.
+    func adopt(_ delegate: NSWindowDelegate?) {
+        retained = delegate as? NSObject
+    }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         NSApp.hide(nil)

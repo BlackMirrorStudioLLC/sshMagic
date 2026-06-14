@@ -89,9 +89,11 @@ actor SFTPClient {
         _ = try await runSFTP("put \(try Self.quote(local.path)) \(try Self.quote(remotePath))")
     }
 
-    /// Delete a file or directory over the master. Directories use `rm -rf`
-    /// (handles non-empty); files use plain `rm -f` to keep the blast radius
-    /// minimal. Callers should confirm first.
+    /// Delete a file or directory over the master. Files go through the SFTP
+    /// protocol's native remove — no shell involved at all, so a hostile
+    /// filename can't reach a command line. Directories need recursion, which
+    /// SFTP can't do, so they fall back to a tightly-guarded `rm -rf` over the
+    /// mux socket. Callers should confirm first.
     func remove(_ remotePath: String, isDirectory: Bool) async throws {
         // Only ever delete an absolute, non-root path — a basename-stripping or
         // relative-path bug upstream must not become a catastrophic remote rm.
@@ -105,15 +107,23 @@ actor SFTPClient {
             throw SFTPError.command("Refusing to delete a path containing '..'.")
         }
         // Reject control characters (e.g. an embedded newline a hostile server
-        // could sneak into a path) before building the remote command.
+        // could sneak into a path) before building any remote command.
         guard !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
         else {
             throw SFTPError.command("Refusing to delete a path with control characters.")
         }
+
+        // Files: SFTP-native remove (SSH_FXP_REMOVE) — no shell, no quoting
+        // hazards. quote() additionally rejects control chars.
+        guard isDirectory else {
+            _ = try await runSFTP("rm \(try Self.quote(trimmed))")
+            return
+        }
+
+        // Directories: recursive delete, which SFTP can't express, so shell out.
         guard await controlSocketIsUp() else { throw SFTPError.notConnected }
         // Single-quote for the remote shell; `--` stops option injection.
         let escaped = trimmed.replacingOccurrences(of: "'", with: "'\\''")
-        let flags = isDirectory ? "-rf" : "-f"
         let result = try await Self.run(
             "/usr/bin/ssh",
             [
@@ -124,7 +134,7 @@ actor SFTPClient {
                 // inner `rm ... --` likewise protects the remote path.
                 "--",
                 host.userAtHost,
-                "rm \(flags) -- '\(escaped)'",
+                "rm -rf -- '\(escaped)'",
             ])
         guard result.status == 0 else {
             throw SFTPError.command(result.stderr.isEmpty ? "Delete failed." : result.stderr)
