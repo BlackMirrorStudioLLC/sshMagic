@@ -40,6 +40,8 @@ enum HostKeyCheck {
         if host.port != 22 { args += ["-p", String(host.port)] }
         // `--` so a leading-`-` hostname can't be read as an option; `true` is a
         // harmless remote command we never actually reach (auth/host-key first).
+        // userAtHost comes from the resolved session (same source the terminal's
+        // ssh uses), so this probe has no injection surface the main flow lacks.
         args += ["--", host.userAtHost, "true"]
         let stderr = await Self.runCapturingStderr("/usr/bin/ssh", args)
         return parse(stderr)

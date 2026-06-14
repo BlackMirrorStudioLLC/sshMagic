@@ -27,7 +27,8 @@ final class TerminalSession: ObservableObject, Identifiable {
     /// Force `StrictHostKeyChecking=accept-new` even without a stored password.
     /// Set when reconnecting right after the user chose to overwrite a changed
     /// host key, so the freshly-presented key is recorded without a prompt.
-    var acceptNewHostKey = false
+    /// Write-once (set at init) so a reused session can't silently inherit it.
+    let acceptNewHostKey: Bool
 
     /// Called when `ssh` exits with its own error code (255) — i.e. a connection
     /// failure rather than a normal remote logout. AppState uses this to probe
@@ -43,9 +44,10 @@ final class TerminalSession: ObservableObject, Identifiable {
     /// multiplexed connection as the terminal and SFTP.
     let stats: RemoteStatsMonitor
 
-    init(host: Host, password: String? = nil) {
+    init(host: Host, password: String? = nil, acceptNewHostKey: Bool = false) {
         self.host = host
         self.password = password
+        self.acceptNewHostKey = acceptNewHostKey
         self.title = host.displayName
         // Place the multiplex socket in the per-user temp dir (~/var/folders/.../T),
         // NOT world-readable /tmp, so other local users can't even enumerate it.

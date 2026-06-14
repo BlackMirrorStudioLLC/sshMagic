@@ -200,8 +200,8 @@ final class AppState: ObservableObject {
     ) {
         var resolved = host
         resolved.username = username
-        let session = TerminalSession(host: resolved, password: password)
-        session.acceptNewHostKey = acceptNewHostKey
+        let session = TerminalSession(
+            host: resolved, password: password, acceptNewHostKey: acceptNewHostKey)
         // On an ssh-level failure, probe for a changed host key (see below).
         session.onEarlyExit = { [weak self, weak session] _ in
             guard let self, let session else { return }
