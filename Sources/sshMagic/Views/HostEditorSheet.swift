@@ -6,15 +6,18 @@ import SwiftUI
 struct HostEditorSheet: View {
     /// The host being edited, or nil when adding a new one.
     let editing: Host?
-    let onSave: (Host) -> Void
+    /// Called with the host details and a new password (nil when the field is
+    /// left blank, meaning "no change").
+    let onSave: (Host, String?) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var hostname: String
     @State private var port: String
     @State private var username: String
     @State private var displayName: String
+    @State private var password = ""
 
-    init(editing: Host? = nil, onSave: @escaping (Host) -> Void) {
+    init(editing: Host? = nil, onSave: @escaping (Host, String?) -> Void) {
         self.editing = editing
         self.onSave = onSave
         _hostname = State(initialValue: editing?.hostname ?? "")
@@ -40,6 +43,9 @@ struct HostEditorSheet: View {
                 TextField("Hostname or IP", text: $hostname)
                 TextField("Port", text: $port)
                 TextField("Username (optional)", text: $username)
+                SecureField(
+                    isEditing ? "Password (leave blank to keep current)" : "Password (optional)",
+                    text: $password)
                 TextField("Display name (optional)", text: $displayName)
             }
             .formStyle(.grouped)
@@ -56,7 +62,7 @@ struct HostEditorSheet: View {
                         username: username.isEmpty ? nil : username,
                         source: .manual
                     )
-                    onSave(host)
+                    onSave(host, password.isEmpty ? nil : password)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)

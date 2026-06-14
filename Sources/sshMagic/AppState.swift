@@ -232,7 +232,7 @@ final class AppState: ObservableObject {
     /// username changed, the old Keychain password and known_hosts key are no
     /// longer valid for it, so they're cleared (the password will be re-asked on
     /// next connect). A display-name/username-preserving edit keeps the password.
-    func updateSavedHost(original: Host, to edited: Host) {
+    func updateSavedHost(original: Host, to edited: Host, password: String?) {
         let accountUnchanged = original.id == edited.id && original.username == edited.username
         savedHosts.removeAll { $0.id == original.id }
         if !accountUnchanged, let username = original.username, !username.isEmpty {
@@ -243,8 +243,16 @@ final class AppState: ObservableObject {
         if original.id != edited.id { KnownHosts.forget(original) }
         upsertSavedHost(edited)
 
-        // Keep saved credentials in sync for any open/cached session of this host.
+        // A newly-entered password is stored under the edited login; a blank one
+        // leaves an unchanged login's existing password in place.
+        if let password, !password.isEmpty, let username = edited.username, !username.isEmpty {
+            KeychainStore.setPassword(
+                password, account: KeychainStore.account(username: username, hostID: edited.id))
+        }
+
+        // Drop cached creds so the next connect re-resolves them.
         sessionCredentials[original.id] = nil
+        sessionCredentials[edited.id] = nil
     }
 
     func removeSavedHost(_ host: Host) {

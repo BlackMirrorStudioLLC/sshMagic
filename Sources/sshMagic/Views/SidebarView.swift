@@ -50,14 +50,19 @@ struct SidebarView: View {
         }
         .background(Theme.panel)
         .sheet(isPresented: $showAddSheet) {
-            HostEditorSheet { host in
-                app.saveHost(host)
-                app.requestConnect(to: host)
+            HostEditorSheet { host, password in
+                if let password, let username = host.username, !username.isEmpty {
+                    // Entered creds → store and connect straight away.
+                    app.connect(host: host, username: username, password: password, remember: true)
+                } else {
+                    app.saveHost(host)
+                    app.requestConnect(to: host)
+                }
             }
         }
         .sheet(item: $editingHost) { host in
-            HostEditorSheet(editing: host) { edited in
-                app.updateSavedHost(original: host, to: edited)
+            HostEditorSheet(editing: host) { edited, password in
+                app.updateSavedHost(original: host, to: edited, password: password)
             }
         }
         .sheet(item: $app.pendingConnect) { host in
