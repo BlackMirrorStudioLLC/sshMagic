@@ -309,15 +309,27 @@ private struct FileRow: View {
             Image(systemName: file.icon)
                 .frame(width: 18)
                 .foregroundStyle(file.isDirectory ? Theme.accent : .secondary)
-            Text(file.name)
-                .lineLimit(1)
-            Spacer()
-            if !file.sizeText.isEmpty {
-                Text(file.sizeText)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(file.name)
+                    .lineLimit(1)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
+            Spacer()
         }
         .padding(.vertical, 1)
+    }
+
+    /// "<modified>  ·  <size>" — modification time so you can see recent edits,
+    /// plus the file size.
+    private var subtitle: String {
+        var parts: [String] = []
+        if !file.modified.isEmpty { parts.append(file.modified) }
+        if !file.sizeText.isEmpty { parts.append(file.sizeText) }
+        return parts.joined(separator: "  ·  ")
     }
 }

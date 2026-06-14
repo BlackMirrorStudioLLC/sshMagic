@@ -164,6 +164,11 @@ final class FilePanelModel: ObservableObject {
         defer { transfer = nil }
         do {
             try await client.upload(local: session.localURL, toRemotePath: session.remotePath)
+            // If we're still showing the folder the file lives in, refresh so its
+            // updated modification time appears right away.
+            if (session.remotePath as NSString).deletingLastPathComponent == path {
+                await refresh()
+            }
         } catch {
             self.error = error.localizedDescription
         }
