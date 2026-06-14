@@ -32,6 +32,8 @@ final class AppState: ObservableObject {
     @Published var pendingConnect: Host?
     /// Non-nil while the "host key changed — overwrite?" alert should be shown.
     @Published var hostKeyAlert: HostKeyAlert?
+    /// Non-nil to show an error when a host-key overwrite couldn't be completed.
+    @Published var hostKeyError: String?
     /// Sessions whose SFTP file browser is currently visible.
     @Published var filesVisible: Set<TerminalSession.ID> = []
     /// Whether the remote-monitoring stats bar is shown under terminals.
@@ -234,14 +236,24 @@ final class AppState: ObservableObject {
     }
 
     func dismissHostKeyAlert() { hostKeyAlert = nil }
+    func dismissHostKeyError() { hostKeyError = nil }
 
     /// Forget the stale key, then reconnect (auto-accepting the new key). The
     /// reconnect is deferred until `ssh-keygen -R` finishes so it can't race the
-    /// old entry.
+    /// old entry — and only happens if the removal actually succeeded, so a
+    /// failed removal surfaces an error instead of looping the prompt.
     func overwriteHostKeyAndReconnect(_ alert: HostKeyAlert) {
         hostKeyAlert = nil
-        KnownHosts.forget(alert.host) { [weak self] in
-            self?.reconnectAfterOverwrite(alert)
+        KnownHosts.forget(alert.host) { [weak self] removed in
+            guard let self else { return }
+            if removed {
+                self.reconnectAfterOverwrite(alert)
+            } else {
+                self.hostKeyError =
+                    "Couldn't remove the old host key for \(alert.host.displayName). Your "
+                    + "known_hosts file may be read-only — remove the entry manually, then "
+                    + "reconnect."
+            }
         }
     }
 

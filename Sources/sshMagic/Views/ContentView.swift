@@ -27,6 +27,16 @@ struct ContentView: View {
         } message: { alert in
             Text(Self.hostKeyMessage(for: alert))
         }
+        .alert(
+            "Couldn't Update Host Key",
+            isPresented: Binding(
+                get: { app.hostKeyError != nil },
+                set: { if !$0 { app.dismissHostKeyError() } })
+        ) {
+            Button("OK", role: .cancel) { app.dismissHostKeyError() }
+        } message: {
+            Text(app.hostKeyError ?? "")
+        }
     }
 
     /// Security-aware explanation for the changed-host-key alert.

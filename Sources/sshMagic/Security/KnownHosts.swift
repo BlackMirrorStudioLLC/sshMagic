@@ -15,17 +15,20 @@ enum KnownHosts {
     /// (not surfaced): if the key isn't removed, the only consequence is a
     /// host-key prompt on a future reconnect.
     ///
-    /// `completion` runs on the main queue once all targets have been processed —
-    /// used by the "overwrite changed key" flow to reconnect only after the old
-    /// key is actually gone (otherwise the reconnect would hit the stale key).
-    static func forget(_ host: Host, completion: (@MainActor @Sendable () -> Void)? = nil) {
+    /// `completion` runs on the main actor once all targets have been processed,
+    /// reporting whether every `ssh-keygen -R` succeeded. The "overwrite changed
+    /// key" flow uses it to reconnect only when the old key is actually gone — a
+    /// failed removal (e.g. read-only `known_hosts`) would otherwise hit the
+    /// stale key again and loop the prompt.
+    static func forget(_ host: Host, completion: (@MainActor @Sendable (Bool) -> Void)? = nil) {
         var targets = [host.hostname]
         if host.port != 22 { targets.append("[\(host.hostname)]:\(host.port)") }
 
         DispatchQueue.global(qos: .utility).async {
+            var allRemoved = true
             defer {
                 if let completion {
-                    Task { @MainActor in completion() }
+                    Task { @MainActor in completion(allRemoved) }
                 }
             }
             for target in targets {
@@ -39,6 +42,7 @@ enum KnownHosts {
                 // hostname never starts with `-`, so simply skip one that does.
                 guard !target.hasPrefix("-") else {
                     log.error("Refusing ssh-keygen -R for a leading-dash target: \(target, privacy: .public)")
+                    allRemoved = false
                     continue
                 }
                 let process = Process()
@@ -56,6 +60,7 @@ enum KnownHosts {
                     let reason = error.localizedDescription
                     log.error(
                         "ssh-keygen -R \(target, privacy: .public) failed to launch: \(reason, privacy: .public)")
+                    allRemoved = false
                     continue
                 }
                 let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
@@ -65,6 +70,7 @@ enum KnownHosts {
                     let detail = String(bytes: errData, encoding: .utf8) ?? ""
                     log.error(
                         "ssh-keygen -R \(target, privacy: .public) exited \(code): \(detail, privacy: .public)")
+                    allRemoved = false
                 }
             }
         }

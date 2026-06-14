@@ -24,15 +24,23 @@ enum HostKeyCheck {
         // making a needless extra connection.
         guard await hasStoredKey(for: host) else { return nil }
 
-        let args =
-            [
-                "-o", "BatchMode=yes",
-                "-o", "StrictHostKeyChecking=yes",
-                "-o", "ConnectTimeout=8",
-                // Stay independent of the terminal's multiplexed master.
-                "-o", "ControlMaster=no",
-                "-o", "ControlPath=none",
-            ] + host.sshArguments + ["true"]
+        // Build the probe args explicitly rather than reusing host.sshArguments:
+        // ssh honours the *last* `-o` for a given key, so our security flags must
+        // not be overridable by any option a host might one day carry. A short
+        // ConnectTimeout — we only need the key-exchange round trip, not a login —
+        // keeps a stored-but-unreachable host from blocking for the full default.
+        var args = [
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "ConnectTimeout=3",
+            // Stay independent of the terminal's multiplexed master.
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
+        ]
+        if host.port != 22 { args += ["-p", String(host.port)] }
+        // `--` so a leading-`-` hostname can't be read as an option; `true` is a
+        // harmless remote command we never actually reach (auth/host-key first).
+        args += ["--", host.userAtHost, "true"]
         let stderr = await Self.runCapturingStderr("/usr/bin/ssh", args)
         return parse(stderr)
     }
