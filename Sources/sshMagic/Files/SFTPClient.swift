@@ -68,12 +68,12 @@ actor SFTPClient {
     }
 
     func list(_ path: String) async throws -> [RemoteFile] {
-        let out = try await runSFTP("ls -la \(Self.quote(path))")
+        let out = try await runSFTP("ls -la \(try Self.quote(path))")
         return RemoteFile.parse(lsOutput: out)
     }
 
     func download(remotePath: String, to local: URL) async throws {
-        _ = try await runSFTP("get \(Self.quote(remotePath)) \(Self.quote(local.path))")
+        _ = try await runSFTP("get \(try Self.quote(remotePath)) \(try Self.quote(local.path))")
     }
 
     func upload(local: URL, toRemoteDir remoteDir: String) async throws {
@@ -81,12 +81,12 @@ actor SFTPClient {
             remoteDir.hasSuffix("/")
             ? remoteDir + local.lastPathComponent
             : remoteDir + "/" + local.lastPathComponent
-        _ = try await runSFTP("put \(Self.quote(local.path)) \(Self.quote(dest))")
+        _ = try await runSFTP("put \(try Self.quote(local.path)) \(try Self.quote(dest))")
     }
 
     /// Upload a local file to an exact remote path (used to save edits back).
     func upload(local: URL, toRemotePath remotePath: String) async throws {
-        _ = try await runSFTP("put \(Self.quote(local.path)) \(Self.quote(remotePath))")
+        _ = try await runSFTP("put \(try Self.quote(local.path)) \(try Self.quote(remotePath))")
     }
 
     /// Delete a file or directory over the master. Directories use `rm -rf`
@@ -175,8 +175,15 @@ actor SFTPClient {
     }
 
     /// Quote a path for an sftp command line (sftp does its own arg parsing, not
-    /// a shell): wrap in double quotes, escaping `\` and `"`.
-    private static func quote(_ path: String) -> String {
+    /// a shell): wrap in double quotes, escaping `\` and `"`. Rejects control
+    /// characters first — sftp batch mode reads stdin line-by-line, so a newline
+    /// embedded in a hostile server's filename could split one command into two.
+    /// (`remove()` applies the same guard on its own shell-out path.)
+    private static func quote(_ path: String) throws -> String {
+        guard !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        else {
+            throw SFTPError.command("Refusing a path containing control characters.")
+        }
         let escaped =
             path
             .replacingOccurrences(of: "\\", with: "\\\\")

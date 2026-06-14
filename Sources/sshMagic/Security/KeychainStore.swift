@@ -28,7 +28,10 @@ enum KeychainStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        // Replace any existing item so updates are idempotent.
+        // Delete-then-add upsert: this runs on every save, including a
+        // same-account password change, so an edited password always takes
+        // effect (a bare SecItemAdd would return errSecDuplicateItem and leave
+        // the old secret in place).
         SecItemDelete(base as CFDictionary)
 
         var add = base
