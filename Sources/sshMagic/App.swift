@@ -18,8 +18,12 @@ struct SSHMagicApp: App {
 }
 
 /// Ensures the app behaves as a normal foreground GUI app even when launched as
-/// a bare SwiftPM executable (no `.app` bundle / LSUIElement plist).
+/// a bare SwiftPM executable (no `.app` bundle / LSUIElement plist), and gives it
+/// standard Mac close behavior: the red X hides the app to the Dock (keeping SSH
+/// sessions alive) rather than quitting.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var closeInterceptor: WindowCloseInterceptor?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -31,9 +35,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         {
             NSApp.applicationIconImage = icon
         }
+
+        installCloseInterceptor()
     }
 
+    /// Closing the last window does NOT quit — the app stays in the Dock.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
+
+    /// Clicking the Dock icon brings the window back.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows {
+            sender.windows.first?.makeKeyAndOrderFront(nil)
+            sender.activate(ignoringOtherApps: true)
+        }
+        return true
+    }
+
+    /// Install the close interceptor on the main window once SwiftUI has created
+    /// it (retrying briefly until it exists).
+    private func installCloseInterceptor() {
+        guard let window = NSApp.windows.first(where: { $0.contentView != nil }) else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.installCloseInterceptor()
+            }
+            return
+        }
+        guard !(window.delegate is WindowCloseInterceptor) else { return }
+        let interceptor = WindowCloseInterceptor()
+        interceptor.forwarding = window.delegate
+        window.delegate = interceptor
+        closeInterceptor = interceptor
+    }
+}
+
+/// Makes the red close button hide the app — keeping the window and its SSH
+/// sessions alive — instead of quitting, then forwards every other delegate call
+/// to SwiftUI's own window delegate so normal behavior is unaffected.
+final class WindowCloseInterceptor: NSObject, NSWindowDelegate {
+    weak var forwarding: NSWindowDelegate?
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        NSApp.hide(nil)
+        return false
+    }
+
+    // These override Objective-C methods whose signatures use `Selector!`.
+    // swiftlint:disable implicitly_unwrapped_optional
+    override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector) || (forwarding?.responds(to: aSelector) ?? false)
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        (forwarding?.responds(to: aSelector) ?? false)
+            ? forwarding : super.forwardingTarget(for: aSelector)
+    }
+    // swiftlint:enable implicitly_unwrapped_optional
 }
