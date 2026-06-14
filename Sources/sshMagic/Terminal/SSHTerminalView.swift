@@ -59,15 +59,21 @@ struct SSHTerminalView: NSViewRepresentable {
         var env = Terminal.getEnvironmentVariables(termName: "xterm-256color")
         env.append("LANG=\(currentLang())")
 
-        // With a stored password, supply it via SSH_ASKPASS. We also auto-accept
-        // new host keys: under SSH_ASKPASS_REQUIRE=force the yes/no host-key
-        // prompt would otherwise be answered with the password and abort the
-        // connection. `accept-new` still rejects *changed* keys, so a MITM swap
-        // is caught.
+        // Auto-accept *new* host keys when either we're feeding a password (under
+        // SSH_ASKPASS_REQUIRE=force the yes/no host-key prompt would otherwise be
+        // answered with the password and abort the connection) or we're
+        // reconnecting right after the user chose to overwrite a changed key.
+        // `accept-new` still rejects *changed* keys, so a MITM swap is caught and
+        // surfaced as the overwrite prompt rather than silently trusted.
+        let hasPassword = !(session.password ?? "").isEmpty
+        if hasPassword || session.acceptNewHostKey {
+            options += ["-o", "StrictHostKeyChecking=accept-new"]
+        }
+
+        // With a stored password, supply it via SSH_ASKPASS.
         if let password = session.password, !password.isEmpty,
             let askpass = AskPass.make(password: password)
         {
-            options += ["-o", "StrictHostKeyChecking=accept-new"]
             env.append(contentsOf: askpass.environment)
             context.coordinator.tempDir = askpass.cleanupURL
         }
@@ -130,6 +136,12 @@ struct SSHTerminalView: NSViewRepresentable {
             Task { @MainActor in
                 self.session.isConnected = false
                 self.session.exitCode = exitCode
+                // 255 is ssh's own failure code (connection/host-key/etc.), not a
+                // remote shell's exit — the only case worth probing for a changed
+                // host key. A clean logout exits 0 (or the command's own code).
+                if exitCode == 255 {
+                    self.session.onEarlyExit?(exitCode)
+                }
             }
         }
     }

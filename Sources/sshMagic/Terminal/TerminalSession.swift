@@ -24,6 +24,16 @@ final class TerminalSession: ObservableObject, Identifiable {
     @Published var isConnected = true
     @Published var exitCode: Int32?
 
+    /// Force `StrictHostKeyChecking=accept-new` even without a stored password.
+    /// Set when reconnecting right after the user chose to overwrite a changed
+    /// host key, so the freshly-presented key is recorded without a prompt.
+    var acceptNewHostKey = false
+
+    /// Called when `ssh` exits with its own error code (255) — i.e. a connection
+    /// failure rather than a normal remote logout. AppState uses this to probe
+    /// for a changed host key and offer to overwrite it.
+    var onEarlyExit: (@MainActor (Int32?) -> Void)?
+
     /// The file browser model. Cheap to create (it doesn't open an SFTP
     /// connection until the panel is first shown), so visibility is tracked in
     /// AppState while this just holds the per-session SFTP state.

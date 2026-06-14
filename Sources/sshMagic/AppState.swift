@@ -12,6 +12,15 @@ final class AppState: ObservableObject {
         let password: String?
     }
 
+    /// Describes a detected host-key change awaiting the user's decision.
+    struct HostKeyAlert: Identifiable, Sendable {
+        let id = UUID()
+        let sessionID: TerminalSession.ID
+        let host: Host
+        /// The fingerprint of the key the server now presents (for verification).
+        let fingerprint: String?
+    }
+
     let discovery = DiscoveryManager()
 
     @Published var savedHosts: [Host] = []
@@ -21,6 +30,8 @@ final class AppState: ObservableObject {
     }
     /// Non-nil while the credential sheet should be shown for this host.
     @Published var pendingConnect: Host?
+    /// Non-nil while the "host key changed — overwrite?" alert should be shown.
+    @Published var hostKeyAlert: HostKeyAlert?
     /// Sessions whose SFTP file browser is currently visible.
     @Published var filesVisible: Set<TerminalSession.ID> = []
     /// Whether the remote-monitoring stats bar is shown under terminals.
@@ -178,14 +189,67 @@ final class AppState: ObservableObject {
     }
 
     /// Open the actual terminal tab with a resolved login and focus it.
-    private func openSession(host: Host, username: String, password: String?) {
+    private func openSession(
+        host: Host, username: String, password: String?, acceptNewHostKey: Bool = false
+    ) {
         var resolved = host
         resolved.username = username
         let session = TerminalSession(host: resolved, password: password)
+        session.acceptNewHostKey = acceptNewHostKey
+        // On an ssh-level failure, probe for a changed host key (see below).
+        session.onEarlyExit = { [weak self, weak session] _ in
+            guard let self, let session else { return }
+            self.diagnoseHostKey(for: session)
+        }
         sessions.append(session)
         // Setting the selection starts this tab's stats poller (and pauses the
         // previously-selected one) via updateActiveStatsPolling().
         selectedSessionID = session.id
+    }
+
+    // MARK: Changed host keys
+
+    /// After an ssh-level failure, run a quick non-interactive probe to see if it
+    /// was caused by a *changed* host key (a key we trusted no longer matches).
+    /// If so, raise the overwrite prompt. Anything else (auth failure, network
+    /// drop, unknown host) returns nil and is left as the normal closed tab.
+    private func diagnoseHostKey(for session: TerminalSession) {
+        // One probe/alert at a time, and only while the tab is still open.
+        guard hostKeyAlert == nil,
+            sessions.contains(where: { $0.id == session.id })
+        else { return }
+        let host = session.host
+        let sessionID = session.id
+        Task { @MainActor in
+            guard let changed = await HostKeyCheck.detectChangedKey(for: host),
+                self.sessions.contains(where: { $0.id == sessionID })
+            else { return }
+            self.hostKeyAlert = HostKeyAlert(
+                sessionID: sessionID, host: host, fingerprint: changed.newFingerprint)
+        }
+    }
+
+    func dismissHostKeyAlert() { hostKeyAlert = nil }
+
+    /// Forget the stale key, then reconnect (auto-accepting the new key). The
+    /// reconnect is deferred until `ssh-keygen -R` finishes so it can't race the
+    /// old entry.
+    func overwriteHostKeyAndReconnect(_ alert: HostKeyAlert) {
+        hostKeyAlert = nil
+        KnownHosts.forget(alert.host) { [weak self] in
+            self?.reconnectAfterOverwrite(alert)
+        }
+    }
+
+    private func reconnectAfterOverwrite(_ alert: HostKeyAlert) {
+        if let dead = sessions.first(where: { $0.id == alert.sessionID }) {
+            closeSession(dead)
+        }
+        let cred = sessionCredentials[alert.host.id]
+        let username = cred?.username ?? alert.host.username ?? lastUsername
+        openSession(
+            host: alert.host, username: username, password: cred?.password,
+            acceptNewHostKey: true)
     }
 
     /// Show or hide the remote-monitoring bar, starting/stopping the pollers so

@@ -10,16 +10,24 @@ enum KnownHosts {
         subsystem: "com.blackmirrorstudio.sshmagic", category: "knownhosts")
 
     /// Run `ssh-keygen -R` for the host (and its `[host]:port` form on non-22
-    /// ports). Fire-and-forget on a background queue; `ssh-keygen` makes a
-    /// `known_hosts.old` backup, so this is non-destructive to recover from.
-    /// Failures are logged (not surfaced): if the key isn't removed, the only
-    /// consequence is a host-key prompt on a future reconnect, so logging is
-    /// enough to diagnose without blocking the remove flow.
-    static func forget(_ host: Host) {
+    /// ports). Runs on a background queue; `ssh-keygen` makes a `known_hosts.old`
+    /// backup, so this is non-destructive to recover from. Failures are logged
+    /// (not surfaced): if the key isn't removed, the only consequence is a
+    /// host-key prompt on a future reconnect.
+    ///
+    /// `completion` runs on the main queue once all targets have been processed —
+    /// used by the "overwrite changed key" flow to reconnect only after the old
+    /// key is actually gone (otherwise the reconnect would hit the stale key).
+    static func forget(_ host: Host, completion: (@MainActor @Sendable () -> Void)? = nil) {
         var targets = [host.hostname]
         if host.port != 22 { targets.append("[\(host.hostname)]:\(host.port)") }
 
         DispatchQueue.global(qos: .utility).async {
+            defer {
+                if let completion {
+                    DispatchQueue.main.async { MainActor.assumeIsolated { completion() } }
+                }
+            }
             for target in targets {
                 // Defence-in-depth against a hostile mDNS hostname that begins
                 // with `-`. ssh-keygen's `-R` already consumes the next argv as
