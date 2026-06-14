@@ -22,6 +22,20 @@ final class AppState: ObservableObject {
         let fingerprint: String?
     }
 
+    /// What the single host-key `.alert` should currently show. The two cases are
+    /// mutually exclusive, so one `.alert` modifier can present either.
+    enum ActiveAlert: Identifiable {
+        case changedKey(HostKeyAlert)
+        case removalFailed(message: String)
+
+        var id: String {
+            switch self {
+            case .changedKey(let alert): return "changed-\(alert.id)"
+            case .removalFailed: return "removal-failed"
+            }
+        }
+    }
+
     private static let log = Logger(
         subsystem: "com.blackmirrorstudio.sshmagic", category: "appstate")
 
@@ -34,10 +48,10 @@ final class AppState: ObservableObject {
     }
     /// Non-nil while the credential sheet should be shown for this host.
     @Published var pendingConnect: Host?
-    /// Non-nil while the "host key changed — overwrite?" alert should be shown.
-    @Published var hostKeyAlert: HostKeyAlert?
-    /// Non-nil to show an error when a host-key overwrite couldn't be completed.
-    @Published var hostKeyError: String?
+    /// The host-key alert currently on screen, if any. A single property (and a
+    /// single SwiftUI `.alert`) presents either variant — chaining two `.alert`
+    /// modifiers on one view can shadow one of them.
+    @Published var activeAlert: ActiveAlert?
     /// Sessions whose SFTP file browser is currently visible.
     @Published var filesVisible: Set<TerminalSession.ID> = []
     /// Whether the remote-monitoring stats bar is shown under terminals.
@@ -52,6 +66,9 @@ final class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     /// Logins entered this run, so reconnecting doesn't re-prompt.
     private var sessionCredentials: [String: Credentials] = [:]
+    /// Changed-key alerts detected while another alert was already on screen,
+    /// presented serially as each is dismissed rather than dropped.
+    private var pendingHostKeyAlerts: [HostKeyAlert] = []
     /// Hosts with a biometric unlock currently in flight, so a rapid second
     /// connect request (e.g. a double-click) doesn't fire a second Touch ID
     /// prompt and open a duplicate tab.
@@ -226,48 +243,67 @@ final class AppState: ObservableObject {
         // even if `ssh-keygen -R` reported success without actually removing the
         // entry (e.g. a locked known_hosts).
         guard !session.acceptNewHostKey else { return }
-        // One probe/alert at a time, and only while the tab is still open.
-        guard hostKeyAlert == nil,
-            sessions.contains(where: { $0.id == session.id })
-        else { return }
+        guard sessions.contains(where: { $0.id == session.id }) else { return }
         let host = session.host
         let sessionID = session.id
         Task { @MainActor in
             guard let changed = await HostKeyCheck.detectChangedKey(for: host),
                 self.sessions.contains(where: { $0.id == sessionID })
             else { return }
-            // Re-check after the await: two sessions failing at once both clear
-            // the synchronous guard above before either probe finishes. We only
-            // show one alert at a time — log the runner-up rather than dropping
-            // it silently or clobbering the visible one.
-            guard self.hostKeyAlert == nil else {
-                Self.log.notice(
-                    "Host key change for \(host.hostname, privacy: .public) not shown — an alert is already visible")
-                return
-            }
-            self.hostKeyAlert = HostKeyAlert(
+            let info = HostKeyAlert(
                 sessionID: sessionID, host: host, fingerprint: changed.newFingerprint)
+            if self.activeAlert == nil {
+                self.activeAlert = .changedKey(info)
+            } else {
+                // Another alert is up (e.g. a second tab also changed keys at the
+                // same moment). Queue this one and present it once the current is
+                // dismissed, rather than dropping it.
+                self.pendingHostKeyAlerts.append(info)
+                Self.log.notice(
+                    "Host key change for \(host.hostname, privacy: .public) queued behind the active alert")
+            }
         }
     }
 
-    func dismissHostKeyAlert() { hostKeyAlert = nil }
-    func dismissHostKeyError() { hostKeyError = nil }
+    func dismissAlert() {
+        activeAlert = nil
+        presentNextHostKeyAlert()
+    }
 
     /// Forget the stale key, then reconnect (auto-accepting the new key). The
     /// reconnect is deferred until `ssh-keygen -R` finishes so it can't race the
     /// old entry — and only happens if the removal actually succeeded, so a
     /// failed removal surfaces an error instead of looping the prompt.
     func overwriteHostKeyAndReconnect(_ alert: HostKeyAlert) {
-        hostKeyAlert = nil
+        activeAlert = nil
         KnownHosts.forget(alert.host) { [weak self] removed in
             guard let self else { return }
             if removed {
                 self.reconnectAfterOverwrite(alert)
+                self.presentNextHostKeyAlert()
             } else {
-                self.hostKeyError =
-                    "Couldn't remove the old host key for \(alert.host.displayName). Your "
-                    + "known_hosts file may be read-only — remove the entry manually, then "
-                    + "reconnect."
+                self.activeAlert = .removalFailed(
+                    message: "Couldn't remove the old host key for \(alert.host.displayName). "
+                        + "Your known_hosts file may be read-only — remove the entry manually, "
+                        + "then reconnect.")
+            }
+        }
+    }
+
+    /// Present the next queued changed-key alert, if any. Deferred to a later
+    /// main-actor tick so SwiftUI registers the dismissal of the current alert
+    /// before the next one is set (otherwise the re-present can be missed).
+    private func presentNextHostKeyAlert() {
+        guard activeAlert == nil, !pendingHostKeyAlerts.isEmpty else { return }
+        Task { @MainActor in
+            guard self.activeAlert == nil else { return }
+            while !self.pendingHostKeyAlerts.isEmpty {
+                let next = self.pendingHostKeyAlerts.removeFirst()
+                // Skip any whose tab has since been closed.
+                if self.sessions.contains(where: { $0.id == next.sessionID }) {
+                    self.activeAlert = .changedKey(next)
+                    return
+                }
             }
         }
     }

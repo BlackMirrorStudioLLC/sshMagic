@@ -55,6 +55,8 @@ enum HostKeyCheck {
     /// ssh_config, we'll report "no stored key", skip the probe, and not raise
     /// the overwrite prompt. The connection itself stays safe — ssh still
     /// rejects the changed key — the user just doesn't get the one-click fix.
+    /// (Same caveat for a bare IPv6 address whose entry is stored in `[::1]`
+    /// bracket form — `-F ::1` won't match it.)
     private static func hasStoredKey(for host: Host) async -> Bool {
         if await runSucceeds("/usr/bin/ssh-keygen", ["-F", host.hostname]) { return true }
         if host.port != 22 {
