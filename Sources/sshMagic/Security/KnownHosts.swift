@@ -25,7 +25,7 @@ enum KnownHosts {
         DispatchQueue.global(qos: .utility).async {
             defer {
                 if let completion {
-                    DispatchQueue.main.async { MainActor.assumeIsolated { completion() } }
+                    Task { @MainActor in completion() }
                 }
             }
             for target in targets {

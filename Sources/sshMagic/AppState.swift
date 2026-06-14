@@ -221,7 +221,11 @@ final class AppState: ObservableObject {
         let host = session.host
         let sessionID = session.id
         Task { @MainActor in
+            // Re-check `hostKeyAlert` after the await: two sessions failing at
+            // once both clear the synchronous guard above before either probe
+            // finishes, so without this the second would clobber the first alert.
             guard let changed = await HostKeyCheck.detectChangedKey(for: host),
+                self.hostKeyAlert == nil,
                 self.sessions.contains(where: { $0.id == sessionID })
             else { return }
             self.hostKeyAlert = HostKeyAlert(
