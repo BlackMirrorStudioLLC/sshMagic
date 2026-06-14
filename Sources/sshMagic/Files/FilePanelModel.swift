@@ -97,7 +97,11 @@ final class FilePanelModel: ObservableObject {
         do {
             let tmpDir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("sshmagic-dl-\(UUID().uuidString.prefix(8))", isDirectory: true)
-            try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+            // 0700: downloaded files may be SSH configs, keys, or .env — keep
+            // them readable only by this user for the life of the temp dir.
+            try FileManager.default.createDirectory(
+                at: tmpDir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
             defer { try? FileManager.default.removeItem(at: tmpDir) }
 
             let tmp = tmpDir.appendingPathComponent(file.name)
@@ -139,7 +143,11 @@ final class FilePanelModel: ObservableObject {
         do {
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("sshmagic-edit-\(UUID().uuidString.prefix(8))", isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            // 0700: an edit session can hold sensitive remote files (SSH config,
+            // keys, .env) on disk for hours — keep them user-only readable.
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
             let local = dir.appendingPathComponent(file.name)
             try await client.download(remotePath: remotePath, to: local)
             transfer = nil
