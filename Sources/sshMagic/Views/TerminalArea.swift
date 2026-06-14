@@ -11,6 +11,7 @@ struct TerminalArea: View {
             if !app.sessions.isEmpty {
                 HStack(spacing: 0) {
                     TabStrip()
+                    statsToggle
                     filesToggle
                 }
                 Divider().overlay(Theme.terminalBG)
@@ -24,6 +25,10 @@ struct TerminalArea: View {
                         .frame(width: filePanelWidth)
                 }
             }
+            if let session = activeSession, app.showStatsBar {
+                Divider().overlay(Theme.terminalBG)
+                StatsBar(monitor: session.stats, hostName: session.host.displayName)
+            }
         }
     }
 
@@ -34,7 +39,7 @@ struct TerminalArea: View {
             Theme.terminalBG.ignoresSafeArea()
             if let session = activeSession {
                 ForEach(app.sessions) { s in
-                    SSHTerminalView(session: s)
+                    SSHTerminalView(session: s, isActive: s.id == session.id)
                         .opacity(s.id == session.id ? 1 : 0)
                         .allowsHitTesting(s.id == session.id)
                 }
@@ -44,6 +49,20 @@ struct TerminalArea: View {
             } else {
                 WelcomePanel()
             }
+        }
+    }
+
+    @ViewBuilder private var statsToggle: some View {
+        if activeSession != nil {
+            Button {
+                app.toggleStatsBar()
+            } label: {
+                Image(systemName: "chart.bar.xaxis")
+                    .foregroundStyle(app.showStatsBar ? Theme.accent : .secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("Toggle remote monitoring")
+            .padding(.horizontal, 4)
         }
     }
 

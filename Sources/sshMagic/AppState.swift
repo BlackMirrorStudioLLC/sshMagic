@@ -21,11 +21,22 @@ final class AppState: ObservableObject {
     @Published var pendingConnect: Host?
     /// Sessions whose SFTP file browser is currently visible.
     @Published var filesVisible: Set<TerminalSession.ID> = []
+    /// Whether the remote-monitoring stats bar is shown under terminals.
+    /// Persisted so the choice survives a restart.
+    @Published var showStatsBar =
+        UserDefaults.standard.object(forKey: "showStatsBar") as? Bool ?? true
+    {
+        didSet { UserDefaults.standard.set(showStatsBar, forKey: "showStatsBar") }
+    }
 
     private let savedHostsURL: URL
     private var cancellables = Set<AnyCancellable>()
     /// Logins entered this run, so reconnecting doesn't re-prompt.
     private var sessionCredentials: [String: Credentials] = [:]
+    /// Hosts with a biometric unlock currently in flight, so a rapid second
+    /// connect request (e.g. a double-click) doesn't fire a second Touch ID
+    /// prompt and open a duplicate tab.
+    private var biometricInFlight: Set<String> = []
     /// Last username typed, used to pre-fill the sheet for new hosts.
     private var lastUsername: String =
         UserDefaults.standard.string(forKey: "lastUsername") ?? NSUserName()
@@ -64,15 +75,68 @@ final class AppState: ObservableObject {
 
     // MARK: Connecting
 
-    /// Entry point for "connect to this host". If we already know the login
-    /// (remembered this session, or saved with a username), connect straight
-    /// through; otherwise raise the credential sheet.
+    /// Entry point for "connect to this host". If we already know the login,
+    /// connect straight through — but a *saved password* is unlocked with Touch
+    /// ID first (falling back to typing if the fingerprint fails). Hosts with no
+    /// known login raise the credential sheet.
     func requestConnect(to host: Host) {
-        if let credentials = resolvedCredentials(for: host) {
-            openSession(host: host, username: credentials.username, password: credentials.password)
+        // Already unlocked this run.
+        if let cred = sessionCredentials[host.id] {
+            openSession(host: host, username: cred.username, password: cred.password)
+            return
+        }
+
+        let knownUsername =
+            savedHosts.first(where: { $0.id == host.id })?.username ?? host.username
+        guard let username = knownUsername, !username.isEmpty else {
+            pendingConnect = host
+            return
+        }
+
+        let account = KeychainStore.account(username: username, hostID: host.id)
+        guard KeychainStore.hasPassword(account: account) else {
+            // Username known but no saved password — raise the sheet (pre-filled
+            // with the username) so the password can be entered and stored,
+            // rather than silently letting ssh prompt in the terminal where it
+            // can never be remembered. Leave the password blank to use a key.
+            pendingConnect = host
+            return
+        }
+
+        // A saved password exists. Gate its use with Touch ID (when available),
+        // then read it and connect; on cancel/failure fall back to the sheet.
+        guard BiometricAuth.isAvailable else {
+            connectWithStoredPassword(host: host, username: username, account: account)
+            return
+        }
+        // Drop a second concurrent request for the same host: both calls arrive
+        // on the main actor before the auth Task runs, so without this guard a
+        // double-click would prompt twice and open two identical tabs.
+        guard !biometricInFlight.contains(host.id) else { return }
+        biometricInFlight.insert(host.id)
+        Task { @MainActor in
+            defer { self.biometricInFlight.remove(host.id) }
+            let ok = await BiometricAuth.authenticate(
+                reason: "Unlock the saved password for \(host.displayName)")
+            if ok {
+                self.connectWithStoredPassword(host: host, username: username, account: account)
+            } else {
+                self.pendingConnect = host
+            }
+        }
+    }
+
+    private func connectWithStoredPassword(host: Host, username: String, account: String) {
+        if let stored = KeychainStore.password(account: account) {
+            cacheAndOpen(host: host, username: username, password: stored)
         } else {
             pendingConnect = host
         }
+    }
+
+    private func cacheAndOpen(host: Host, username: String, password: String?) {
+        sessionCredentials[host.id] = Credentials(username: username, password: password)
+        openSession(host: host, username: username, password: password)
     }
 
     /// Force the credential sheet even when a login is known ("Connect As…").
@@ -111,19 +175,6 @@ final class AppState: ObservableObject {
         return lastUsername
     }
 
-    /// Resolve a known login without prompting, or nil if we must ask.
-    private func resolvedCredentials(for host: Host) -> Credentials? {
-        if let cached = sessionCredentials[host.id] { return cached }
-
-        let knownUsername =
-            savedHosts.first(where: { $0.id == host.id })?.username
-            ?? host.username
-        guard let username = knownUsername, !username.isEmpty else { return nil }
-
-        let acct = KeychainStore.account(username: username, hostID: host.id)
-        return Credentials(username: username, password: KeychainStore.password(account: acct))
-    }
-
     /// Open the actual terminal tab with a resolved login and focus it.
     private func openSession(host: Host, username: String, password: String?) {
         var resolved = host
@@ -131,6 +182,16 @@ final class AppState: ObservableObject {
         let session = TerminalSession(host: resolved, password: password)
         sessions.append(session)
         selectedSessionID = session.id
+        if showStatsBar { session.stats.start() }
+    }
+
+    /// Show or hide the remote-monitoring bar, starting/stopping the per-session
+    /// pollers so they only run while the bar is visible.
+    func toggleStatsBar() {
+        showStatsBar.toggle()
+        for session in sessions {
+            if showStatsBar { session.stats.start() } else { session.stats.stop() }
+        }
     }
 
     /// Show or hide the SFTP file browser for a session.
@@ -145,6 +206,7 @@ final class AppState: ObservableObject {
     func closeSession(_ session: TerminalSession) {
         guard let index = sessions.firstIndex(where: { $0.id == session.id }) else { return }
         session.filePanel.disconnect()
+        session.stats.stop()
         filesVisible.remove(session.id)
         sessions.remove(at: index)
         if selectedSessionID == session.id {
@@ -181,13 +243,45 @@ final class AppState: ObservableObject {
         persistSavedHosts()
     }
 
+    /// Apply edits to a saved host. If the connection identity (host/port) or
+    /// username changed, the old Keychain password and known_hosts key are no
+    /// longer valid for it, so they're cleared (the password will be re-asked on
+    /// next connect). A display-name/username-preserving edit keeps the password.
+    func updateSavedHost(original: Host, to edited: Host, password: String?) {
+        let accountUnchanged = original.id == edited.id && original.username == edited.username
+        savedHosts.removeAll { $0.id == original.id }
+        if !accountUnchanged, let username = original.username, !username.isEmpty {
+            KeychainStore.deletePassword(
+                account: KeychainStore.account(username: username, hostID: original.id))
+        }
+        // If the host/port changed, the old saved key won't match the new target.
+        if original.id != edited.id { KnownHosts.forget(original) }
+        upsertSavedHost(edited)
+
+        // A newly-entered password is stored under the edited login; a blank one
+        // leaves an unchanged login's existing password in place.
+        let passwordChanged = !(password ?? "").isEmpty
+        if passwordChanged, let username = edited.username, !username.isEmpty {
+            KeychainStore.setPassword(
+                password ?? "", account: KeychainStore.account(username: username, hostID: edited.id))
+        }
+
+        // Only drop cached creds when the login actually changed — a display-name
+        // edit shouldn't force a spurious Touch ID re-prompt next connect.
+        if !accountUnchanged || passwordChanged {
+            sessionCredentials[original.id] = nil
+            sessionCredentials[edited.id] = nil
+        }
+    }
+
     func removeSavedHost(_ host: Host) {
         savedHosts.removeAll { $0.id == host.id }
-        // Forget any stored password too.
+        // Forget the stored password and the SSH host key for this box.
         if let username = host.username, !username.isEmpty {
             KeychainStore.deletePassword(
                 account: KeychainStore.account(username: username, hostID: host.id))
         }
+        KnownHosts.forget(host)
         persistSavedHosts()
     }
 

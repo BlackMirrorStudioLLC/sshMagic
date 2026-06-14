@@ -5,10 +5,11 @@ import Foundation
 /// putting it on the command line (where `ps` would expose it) or scraping the
 /// terminal for the prompt.
 ///
-/// We write the password to a private temp file (0600) and a tiny helper script
-/// (0700) that prints it and immediately deletes it, so the password is read
-/// exactly once and lives on disk only momentarily. `SSH_ASKPASS_REQUIRE=force`
-/// makes ssh call the helper even though it has a tty.
+/// We write the password to a private temp file (0600) inside a 0700 directory
+/// in the per-user temp area, plus a tiny helper script (0700) that prints it.
+/// The directory is removed when the session ends (and swept at next launch if
+/// we crashed), so the password lives on disk only for the session.
+/// `SSH_ASKPASS_REQUIRE=force` makes ssh call the helper even though it has a tty.
 enum AskPass {
     struct Setup {
         /// Environment entries to add to the ssh process.
@@ -28,17 +29,31 @@ enum AskPass {
                 attributes: [.posixPermissions: 0o700])
 
             let pwURL = dir.appendingPathComponent("pw")
-            try Data(password.utf8).write(to: pwURL, options: .completeFileProtection)
-            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pwURL.path)
+            // NOTE: do not use `.completeFileProtection` here — that iOS data-
+            // protection class fails with EPERM on macOS. The 0600 file inside a
+            // 0700 directory is the real protection.
+            //
+            // createFile sets 0600 atomically at creation, so the file never
+            // exists with umask-default permissions — no write-then-chmod window
+            // (it's already shielded by the 0700 dir, but this closes it fully).
+            guard
+                fm.createFile(
+                    atPath: pwURL.path, contents: Data(password.utf8),
+                    attributes: [.posixPermissions: 0o600])
+            else { return nil }
 
-            // The helper prints the password then removes the file, so a single
-            // read consumes it. Paths are app-generated UUIDs (no shell-unsafe
-            // characters), so single-quoting is sufficient.
+            // The helper just prints the password. It does NOT self-delete the
+            // file: OpenSSH may invoke askpass more than once per session (a
+            // retry, or a host-key confirm before the password), and a consumed
+            // file would feed an empty password on the second call and silently
+            // fail auth. The file is removed when the session ends (the temp dir
+            // is deleted) and swept at next launch if we crashed. Paths are
+            // app-generated UUIDs (no shell-unsafe chars), so single-quoting is
+            // sufficient.
             let scriptURL = dir.appendingPathComponent("askpass.sh")
             let script = """
                 #!/bin/sh
                 cat '\(pwURL.path)'
-                rm -f '\(pwURL.path)'
                 """
             try script.write(to: scriptURL, atomically: true, encoding: .utf8)
             try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)

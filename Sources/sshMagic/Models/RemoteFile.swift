@@ -70,6 +70,13 @@ extension RemoteFile {
         if isSymlink, let arrow = name.range(of: " -> ") {
             name = String(name[..<arrow.lowerBound])
         }
+        // Some sftp servers prefix entries with the full directory path when you
+        // `ls <path>` (e.g. "/home/astro/.bashrc"); reduce to the basename so the
+        // row label and path-joining are correct. A filename can't contain "/",
+        // so this is always safe.
+        if let slash = name.lastIndex(of: "/") {
+            name = String(name[name.index(after: slash)...])
+        }
         guard !name.isEmpty else { return nil }
 
         return RemoteFile(

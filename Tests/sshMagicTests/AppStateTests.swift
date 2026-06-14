@@ -68,6 +68,21 @@ final class AppStateTests: XCTestCase {
         }
     }
 
+    /// A host with a known username but no *saved password* must raise the sheet
+    /// (so the password can be entered and stored), instead of connecting
+    /// directly and letting ssh prompt in the terminal where it can't be saved.
+    func testKnownUsernameWithoutSavedPasswordShowsSheet() {
+        let app = AppState()
+        // Username carried on the host; not cached this run; no Keychain password
+        // for this unlikely address.
+        let host = Host(hostname: "10.9.9.99", username: "deploy", source: .scan)
+
+        app.requestConnect(to: host)
+
+        XCTAssertEqual(app.pendingConnect?.id, host.id)
+        XCTAssertTrue(app.sessions.isEmpty)
+    }
+
     func testSuggestedUsernameFallsBackToLastUsed() {
         let app = AppState()
         let host = Host(hostname: "10.9.9.11", source: .scan)

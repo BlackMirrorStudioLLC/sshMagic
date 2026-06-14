@@ -6,12 +6,15 @@ import UniformTypeIdentifiers
 struct FilePanel: View {
     @ObservedObject var model: FilePanelModel
     @State private var isDropTarget = false
+    @State private var pendingDelete: RemoteFile?
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider().overlay(Theme.panelRaised)
-
+            if let message = model.error, !model.files.isEmpty {
+                errorBanner(message)
+            }
             ZStack {
                 Theme.panel.ignoresSafeArea()
                 content
@@ -23,6 +26,24 @@ struct FilePanel: View {
         .task { await model.start() }
         .onDrop(of: [.fileURL], isTargeted: $isDropTarget) { providers in
             handleDrop(providers)
+        }
+        .confirmationDialog(
+            "Delete “\(pendingDelete?.name ?? "")”?",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }),
+            presenting: pendingDelete
+        ) { file in
+            Button("Delete", role: .destructive) {
+                Task { await model.delete(file) }
+                pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { file in
+            Text(
+                file.isDirectory
+                    ? "This permanently deletes the folder and everything in it on the remote host."
+                    : "This permanently deletes the file on the remote host.")
         }
     }
 
@@ -90,7 +111,15 @@ struct FilePanel: View {
                 ForEach(model.files) { file in
                     FileRow(file: file)
                         .contentShape(Rectangle())
-                        .onTapGesture(count: 2) { Task { await model.open(file) } }
+                        .onTapGesture(count: 2) {
+                            Task {
+                                if file.isDirectory || file.isSymlink {
+                                    await model.open(file)
+                                } else {
+                                    await model.edit(file)
+                                }
+                            }
+                        }
                         .onDrag { dragProvider(for: file) }
                         .contextMenu { rowMenu(file) }
                 }
@@ -110,12 +139,22 @@ struct FilePanel: View {
         }
         if !file.isDirectory {
             Button {
-                saveToDownloads(file)
+                Task { await model.edit(file) }
             } label: {
-                Label("Download to Downloads", systemImage: "square.and.arrow.down")
+                Label("Edit", systemImage: "pencil")
+            }
+            Button {
+                downloadWithPanel(file)
+            } label: {
+                Label("Download…", systemImage: "square.and.arrow.down")
             }
         }
         Divider()
+        Button(role: .destructive) {
+            pendingDelete = file
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
         Button {
             Task { await model.refresh() }
         } label: {
@@ -149,12 +188,33 @@ struct FilePanel: View {
                 .font(.caption)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
-            Button("Retry") { Task { await model.refresh() } }
+            Button("Retry") { Task { await model.retry() } }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// A dismissible banner for operation errors (download/edit/delete) shown
+    /// while a listing is still visible, so failures aren't silent.
+    private func errorBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Theme.scanTint)
+            Text(message)
+                .font(.caption)
+                .lineLimit(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                model.dismissError()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(8)
+        .background(Theme.scanTint.opacity(0.12))
     }
 
     private var dropOverlay: some View {
@@ -228,12 +288,15 @@ struct FilePanel: View {
         }
     }
 
-    private func saveToDownloads(_ file: RemoteFile) {
-        let downloads =
-            FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
-        let dest = downloads.appendingPathComponent(file.name)
-        Task { try? await model.download(file, to: dest) }
+    /// Reliable download: the user picks the destination via a save panel, which
+    /// grants write access (avoiding the silent Downloads-folder TCC failure).
+    private func downloadWithPanel(_ file: RemoteFile) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = file.name
+        panel.canCreateDirectories = true
+        if panel.runModal() == .OK, let url = panel.url {
+            Task { await model.save(file, to: url) }
+        }
     }
 }
 
@@ -246,15 +309,27 @@ private struct FileRow: View {
             Image(systemName: file.icon)
                 .frame(width: 18)
                 .foregroundStyle(file.isDirectory ? Theme.accent : .secondary)
-            Text(file.name)
-                .lineLimit(1)
-            Spacer()
-            if !file.sizeText.isEmpty {
-                Text(file.sizeText)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(file.name)
+                    .lineLimit(1)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
+            Spacer()
         }
         .padding(.vertical, 1)
+    }
+
+    /// "<modified>  ·  <size>" — modification time so you can see recent edits,
+    /// plus the file size.
+    private var subtitle: String {
+        var parts: [String] = []
+        if !file.modified.isEmpty { parts.append(file.modified) }
+        if !file.sizeText.isEmpty { parts.append(file.sizeText) }
+        return parts.joined(separator: "  ·  ")
     }
 }

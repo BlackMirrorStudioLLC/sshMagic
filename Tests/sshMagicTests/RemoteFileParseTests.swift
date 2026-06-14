@@ -15,6 +15,25 @@ final class RemoteFileParseTests: XCTestCase {
         drwxr-xr-x    2 astro    astro        4096 Jun 02 10:00 My Projects
         """
 
+    /// Some sftp servers prefix every entry with the full directory path when
+    /// listing an explicit path — names must reduce to the basename, and the
+    /// path-prefixed "." / ".." must still be filtered out.
+    func testFullPathPrefixedEntriesReduceToBasename() {
+        let prefixed = """
+            drwxr-xr-x    5 astro astro 4096 Jun 14 14:00 /home/astro/.
+            drwxr-xr-x    3 root  root  4096 Jan 01  2024 /home/astro/..
+            -rw-r--r--    1 astro astro  495 Jun 14 13:59 /home/astro/.bash_history
+            drwxr-xr-x    2 astro astro 4096 Jun 10 09:12 /home/astro/.cache
+            lrwxrwxrwx    1 astro astro   11 Jun 01 08:00 /home/astro/www -> /var/www
+            """
+        let files = RemoteFile.parse(lsOutput: prefixed)
+        let names = files.map(\.name)
+        XCTAssertEqual(names.sorted(), [".bash_history", ".cache", "www"])
+        XCTAssertFalse(names.contains { $0.contains("/") })
+        XCTAssertFalse(names.contains(".") || names.contains(".."))
+        XCTAssertTrue(files.first { $0.name == "www" }?.isSymlink ?? false)
+    }
+
     func testParsesEntriesAndSkipsDotAndPrompt() {
         let files = RemoteFile.parse(lsOutput: sample)
         let names = files.map(\.name)

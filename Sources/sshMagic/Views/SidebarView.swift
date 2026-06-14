@@ -6,6 +6,8 @@ import SwiftUI
 struct SidebarView: View {
     @EnvironmentObject var app: AppState
     @State private var showAddSheet = false
+    @State private var editingHost: Host?
+    @State private var pendingRemove: Host?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,8 +26,16 @@ struct SidebarView: View {
                         ForEach(app.savedHosts) { host in
                             HostRow(host: host)
                                 .contextMenu {
-                                    Button("Remove", role: .destructive) {
-                                        app.removeSavedHost(host)
+                                    Button {
+                                        editingHost = host
+                                    } label: {
+                                        Label("Edit…", systemImage: "pencil")
+                                    }
+                                    Divider()
+                                    Button(role: .destructive) {
+                                        pendingRemove = host
+                                    } label: {
+                                        Label("Remove", systemImage: "trash")
                                     }
                                 }
                         }
@@ -40,9 +50,19 @@ struct SidebarView: View {
         }
         .background(Theme.panel)
         .sheet(isPresented: $showAddSheet) {
-            AddHostSheet { host in
-                app.saveHost(host)
-                app.requestConnect(to: host)
+            HostEditorSheet { host, password in
+                if let password, let username = host.username, !username.isEmpty {
+                    // Entered creds → store and connect straight away.
+                    app.connect(host: host, username: username, password: password, remember: true)
+                } else {
+                    app.saveHost(host)
+                    app.requestConnect(to: host)
+                }
+            }
+        }
+        .sheet(item: $editingHost) { host in
+            HostEditorSheet(editing: host) { edited, password in
+                app.updateSavedHost(original: host, to: edited, password: password)
             }
         }
         .sheet(item: $app.pendingConnect) { host in
@@ -50,6 +70,21 @@ struct SidebarView: View {
                 username, password, remember in
                 app.connect(host: host, username: username, password: password, remember: remember)
             }
+        }
+        .confirmationDialog(
+            "Remove “\(pendingRemove?.displayName ?? "")”?",
+            isPresented: Binding(
+                get: { pendingRemove != nil },
+                set: { if !$0 { pendingRemove = nil } }),
+            presenting: pendingRemove
+        ) { host in
+            Button("Remove", role: .destructive) {
+                app.removeSavedHost(host)
+                pendingRemove = nil
+            }
+            Button("Cancel", role: .cancel) { pendingRemove = nil }
+        } message: { _ in
+            Text("This deletes the saved connection, its saved password, and the box's SSH host key from known_hosts.")
         }
     }
 

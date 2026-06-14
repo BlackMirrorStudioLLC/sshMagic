@@ -73,6 +73,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>NSApplication</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>sshMagic scans your local network to discover SSH servers you can connect to.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>sshMagic saves files you download from a remote host into the folder you choose.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>sshMagic saves files you download from a remote host into the folder you choose.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>sshMagic saves files you download from a remote host into the folder you choose.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_ssh._tcp</string>

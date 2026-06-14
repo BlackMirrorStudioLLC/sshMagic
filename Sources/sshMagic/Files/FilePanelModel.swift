@@ -12,30 +12,55 @@ final class FilePanelModel: ObservableObject {
 
     private let client: SFTPClient
     private var started = false
+    /// True while a connect attempt is in flight, so rapid Retry taps don't
+    /// stack overlapping attempts (each looping up to ~20s in SFTPClient.connect).
+    private var isConnecting = false
+    /// Whether we've shown the home directory yet (so retry knows where to go).
+    private var landed = false
+    /// Files currently open for editing (kept alive so their watchers run).
+    private var editSessions: [EditSession] = []
 
-    init(host: Host, password: String?) {
-        client = SFTPClient(host: host, password: password)
+    init(host: Host, controlPath: String) {
+        client = SFTPClient(host: host, controlPath: controlPath)
     }
 
-    /// Connect and show the home directory. Safe to call more than once.
+    /// Connect (waiting for the terminal's session) and show home. Idempotent.
     func start() async {
         guard !started else { return }
         started = true
+        await connectAndLoad()
+    }
+
+    /// Re-attempt after a failure (e.g. the terminal wasn't connected yet).
+    func retry() async { await connectAndLoad() }
+
+    func refresh() async { await load(path) }
+
+    private func connectAndLoad() async {
+        guard !isConnecting else { return }
+        isConnecting = true
+        defer { isConnecting = false }
         isLoading = true
         error = nil
         do {
             try await client.connect()
-            let home = try await client.home()
-            await load(home)
+            let target = landed ? path : try await client.home()
+            await load(target)
         } catch {
             self.error = error.localizedDescription
             isLoading = false
+            // Allow a fresh attempt if the panel is hidden and reopened (e.g. the
+            // terminal connects after the panel was first shown).
+            started = false
         }
     }
 
-    func refresh() async { await load(path) }
-
     func open(_ file: RemoteFile) async {
+        // Symlinks are always treated as navigable here: `ls` on a symlink-to-dir
+        // descends into it, and `ls` on a symlink-to-file simply lists that one
+        // file. We deliberately don't open a symlink in the editor — the target's
+        // real path is ambiguous, so editing/saving back to the link path could
+        // desync the watcher's mtime check. Plain files go through `edit()`.
         guard file.isDirectory || file.isSymlink else { return }
         await load(joined(path, file.name))
     }
@@ -63,15 +88,136 @@ final class FilePanelModel: ObservableObject {
         await refresh()
     }
 
-    /// Download a file to a local URL (used by both the Save button and the
-    /// drag-to-Finder promise).
+    /// Download a file to a local URL (used by the drag-to-Finder promise, which
+    /// needs the throwing form to report failure to the system).
     func download(_ file: RemoteFile, to local: URL) async throws {
         transfer = "Downloading \(file.name)…"
         defer { transfer = nil }
         try await client.download(remotePath: joined(path, file.name), to: local)
     }
 
+    /// Download to a user-chosen URL, surfacing any error in the panel.
+    ///
+    /// The transfer lands in the app's temp area first (never blocked by macOS
+    /// folder privacy), then the app moves it into place — an app-level file op
+    /// that triggers the correct Desktop/Downloads/Documents permission prompt,
+    /// rather than the `sftp` subprocess writing there and being denied silently.
+    func save(_ file: RemoteFile, to local: URL) async {
+        transfer = "Downloading \(file.name)…"
+        defer { transfer = nil }
+        do {
+            let tmpDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("sshmagic-dl-\(UUID().uuidString.prefix(8))", isDirectory: true)
+            // 0700: downloaded files may be SSH configs, keys, or .env — keep
+            // them readable only by this user for the life of the temp dir.
+            try FileManager.default.createDirectory(
+                at: tmpDir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+            let tmp = tmpDir.appendingPathComponent(file.name)
+            try await client.download(remotePath: joined(path, file.name), to: tmp)
+
+            if FileManager.default.fileExists(atPath: local.path) {
+                try FileManager.default.removeItem(at: local)
+            }
+            try FileManager.default.moveItem(at: tmp, to: local)
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func dismissError() { error = nil }
+
+    /// Delete a file or directory, then refresh.
+    func delete(_ file: RemoteFile) async {
+        do {
+            try await client.remove(joined(path, file.name), isDirectory: file.isDirectory)
+            await refresh()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    /// Open a file in an editor and keep it in sync: edits saved locally are
+    /// pushed back to the host automatically.
+    func edit(_ file: RemoteFile) async {
+        guard !file.isDirectory else { return }
+        let remotePath = joined(path, file.name)
+        // Already open for editing → just bring its editor forward, rather than
+        // creating a second watcher that would race uploads with the first.
+        if let existing = editSessions.first(where: { $0.remotePath == remotePath }) {
+            Editor.open(existing.localURL)
+            return
+        }
+        transfer = "Opening \(file.name)…"
+        do {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("sshmagic-edit-\(UUID().uuidString.prefix(8))", isDirectory: true)
+            // 0700: an edit session can hold sensitive remote files (SSH config,
+            // keys, .env) on disk for hours — keep them user-only readable.
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            let local = dir.appendingPathComponent(file.name)
+            try await client.download(remotePath: remotePath, to: local)
+            transfer = nil
+
+            let session = EditSession(remotePath: remotePath, localURL: local, displayName: file.name)
+            editSessions.append(session)
+            Editor.open(local)
+            startWatching(session)
+        } catch {
+            transfer = nil
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func startWatching(_ session: EditSession) {
+        // Explicitly @MainActor: the class is already main-actor-isolated (so an
+        // unstructured Task here inherits that), but spelling it out keeps the
+        // mutations of editSessions/transfer/error and the @MainActor EditSession
+        // calls below provably on the main actor under strict concurrency.
+        session.watcher = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard let self else { return }
+                // If the temp copy is gone, the edit is over — stop the watcher
+                // and drop the session so they don't accumulate over a long tab.
+                guard FileManager.default.fileExists(atPath: session.localURL.path) else {
+                    session.stop()
+                    self.editSessions.removeAll { $0 === session }
+                    return
+                }
+                guard let modified = EditSession.modified(session.localURL),
+                    modified > session.lastModified
+                else { continue }
+                await self.pushEdit(session, modified: modified)
+            }
+        }
+    }
+
+    private func pushEdit(_ session: EditSession, modified: Date) async {
+        transfer = "Saving \(session.displayName)…"
+        defer { transfer = nil }
+        do {
+            try await client.upload(local: session.localURL, toRemotePath: session.remotePath)
+            // Only mark this version synced on success — otherwise a failed
+            // upload would be skipped on the next poll instead of retried.
+            session.lastModified = modified
+            // If we're still showing the folder the file lives in, refresh so its
+            // updated modification time appears right away.
+            if (session.remotePath as NSString).deletingLastPathComponent == path {
+                await refresh()
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
     func disconnect() {
+        editSessions.forEach { $0.stop() }
+        editSessions.removeAll()
         Task { await client.disconnect() }
     }
 
@@ -82,6 +228,7 @@ final class FilePanelModel: ObservableObject {
             let listing = try await client.list(newPath)
             path = newPath
             files = listing
+            landed = true
         } catch {
             self.error = error.localizedDescription
         }

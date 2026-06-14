@@ -12,6 +12,12 @@ final class TerminalSession: ObservableObject, Identifiable {
     /// terminal" (or use a key).
     let password: String?
 
+    /// Unix socket for SSH connection multiplexing. The terminal's ssh opens
+    /// this as the master; the SFTP file browser reuses it, so the file panel
+    /// rides the terminal's already-authenticated connection instead of
+    /// authenticating again (which would fail for interactively-typed passwords).
+    let controlPath: String
+
     /// Live title — starts as the host label, updated from the shell's OSC title
     /// sequences (so it tracks `ssh`, then the remote shell's prompt title).
     @Published var title: String
@@ -23,10 +29,23 @@ final class TerminalSession: ObservableObject, Identifiable {
     /// AppState while this just holds the per-session SFTP state.
     let filePanel: FilePanelModel
 
+    /// Live remote-vitals monitor (CPU/RAM/net/disk), polled over the same
+    /// multiplexed connection as the terminal and SFTP.
+    let stats: RemoteStatsMonitor
+
     init(host: Host, password: String? = nil) {
         self.host = host
         self.password = password
         self.title = host.displayName
-        self.filePanel = FilePanelModel(host: host, password: password)
+        // Place the multiplex socket in the per-user temp dir (~/var/folders/.../T),
+        // NOT world-readable /tmp, so other local users can't even enumerate it.
+        // 16 hex chars (64 bits) is ample uniqueness while keeping the full path
+        // well under the ~104-char AF_UNIX cap (the per-user dir is ~49 chars).
+        let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16)
+        let control = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sshmagic-\(token).sock").path
+        self.controlPath = control
+        self.filePanel = FilePanelModel(host: host, controlPath: control)
+        self.stats = RemoteStatsMonitor(host: host, controlPath: control)
     }
 }

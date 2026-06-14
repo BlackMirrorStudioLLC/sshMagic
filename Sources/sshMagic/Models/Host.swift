@@ -45,10 +45,12 @@ struct Host: Identifiable, Codable, Hashable {
     }
 
     /// argv for `/usr/bin/ssh` (excludes argv[0]). Non-default ports add `-p`.
+    /// A `--` barrier precedes the destination so a hostname that begins with
+    /// `-` (e.g. from a hostile mDNS responder) can't be parsed as an ssh option.
     var sshArguments: [String] {
         var args: [String] = []
         if port != 22 { args += ["-p", String(port)] }
-        args.append(userAtHost)
+        args += ["--", userAtHost]
         return args
     }
 }
