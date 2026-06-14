@@ -24,7 +24,10 @@ enum KnownHosts {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
                 process.arguments = ["-R", target]
-                process.standardOutput = Pipe()
+                // Discard stdout to /dev/null rather than an unread Pipe(): an
+                // unread pipe would deadlock waitUntilExit() if the child ever
+                // wrote more than the 64 KB buffer.
+                process.standardOutput = FileHandle.nullDevice
                 let errPipe = Pipe()
                 process.standardError = errPipe
                 do {

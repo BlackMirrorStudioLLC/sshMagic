@@ -193,6 +193,13 @@ final class RemoteStatsMonitor: ObservableObject {
     }
 
     /// Run a subprocess off-main, returning stdout (nil on non-zero exit).
+    ///
+    /// A watchdog terminates the child after `timeout` seconds: if the mux
+    /// socket vanishes mid-command, `ssh` can otherwise hang and wedge this
+    /// session's polling loop indefinitely. SIGTERM closes the pipe, which
+    /// unblocks the `readDataToEndOfFile()` below.
+    private static let timeout: TimeInterval = 10
+
     private static func run(_ executable: String, _ args: [String]) async -> String? {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
@@ -208,8 +215,14 @@ final class RemoteStatsMonitor: ObservableObject {
                     continuation.resume(returning: nil)
                     return
                 }
+                let watchdog = DispatchWorkItem {
+                    if process.isRunning { process.terminate() }
+                }
+                DispatchQueue.global(qos: .utility).asyncAfter(
+                    deadline: .now() + timeout, execute: watchdog)
                 let data = outPipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
+                watchdog.cancel()
                 continuation.resume(
                     returning: process.terminationStatus == 0
                         ? String(bytes: data, encoding: .utf8) : nil)

@@ -62,7 +62,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// it, retrying briefly until it exists (capped at ~5s so it can't spin
     /// forever if a window never appears).
     private func installCloseInterceptor(attempt: Int = 0) {
-        guard let window = NSApp.windows.first(where: { $0.contentView != nil }) else {
+        // Require canBecomeMain so we attach to the real content window, not a
+        // hidden accessory/panel SwiftUI might create first.
+        guard
+            let window = NSApp.windows.first(where: { $0.contentView != nil && $0.canBecomeMain })
+        else {
             guard attempt < 25 else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                 self?.installCloseInterceptor(attempt: attempt + 1)

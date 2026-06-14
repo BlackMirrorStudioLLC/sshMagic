@@ -95,8 +95,11 @@ actor SFTPClient {
     /// SFTP can't do, so they fall back to a tightly-guarded `rm -rf` over the
     /// mux socket. Callers should confirm first.
     func remove(_ remotePath: String, isDirectory: Bool) async throws {
-        // Only ever delete an absolute, non-root path — a basename-stripping or
-        // relative-path bug upstream must not become a catastrophic remote rm.
+        // All guards below run on the RAW path, before any quoting/escaping —
+        // keep them ahead of the quote step so e.g. the `..` check can't be
+        // fooled by escaping. Only ever delete an absolute, non-root path: a
+        // basename-stripping or relative-path bug upstream must not become a
+        // catastrophic remote rm.
         let trimmed = remotePath.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasPrefix("/"), trimmed != "/" else {
             throw SFTPError.command("Refusing to delete a relative or root path.")
