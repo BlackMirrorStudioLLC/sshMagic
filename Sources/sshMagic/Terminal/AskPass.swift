@@ -31,8 +31,15 @@ enum AskPass {
             // NOTE: do not use `.completeFileProtection` here — that iOS data-
             // protection class fails with EPERM on macOS. The 0600 file inside a
             // 0700 directory is the real protection.
-            try Data(password.utf8).write(to: pwURL, options: .atomic)
-            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pwURL.path)
+            //
+            // createFile sets 0600 atomically at creation, so the file never
+            // exists with umask-default permissions — no write-then-chmod window
+            // (it's already shielded by the 0700 dir, but this closes it fully).
+            guard
+                fm.createFile(
+                    atPath: pwURL.path, contents: Data(password.utf8),
+                    attributes: [.posixPermissions: 0o600])
+            else { return nil }
 
             // The helper prints the password then removes the file, so a single
             // read consumes it. Paths are app-generated UUIDs (no shell-unsafe
