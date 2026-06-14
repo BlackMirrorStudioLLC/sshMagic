@@ -47,6 +47,12 @@ enum HostKeyCheck {
 
     /// Whether `known_hosts` already holds a key for this host (`ssh-keygen -F`
     /// exits 0 when it finds one). A purely local lookup — no network.
+    ///
+    /// Gap: `ssh-keygen -F` only consults `~/.ssh/known_hosts` (and the global
+    /// file). If the user points `UserKnownHostsFile` somewhere custom in their
+    /// ssh_config, we'll report "no stored key", skip the probe, and not raise
+    /// the overwrite prompt. The connection itself stays safe — ssh still
+    /// rejects the changed key — the user just doesn't get the one-click fix.
     private static func hasStoredKey(for host: Host) async -> Bool {
         if await runSucceeds("/usr/bin/ssh-keygen", ["-F", host.hostname]) { return true }
         if host.port != 22 {

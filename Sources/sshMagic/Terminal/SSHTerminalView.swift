@@ -65,6 +65,12 @@ struct SSHTerminalView: NSViewRepresentable {
         // reconnecting right after the user chose to overwrite a changed key.
         // `accept-new` still rejects *changed* keys, so a MITM swap is caught and
         // surfaced as the overwrite prompt rather than silently trusted.
+        // ssh honours the *last* `-o` for a duplicate key, and these `options`
+        // precede `host.sshArguments`. That's safe today because sshArguments
+        // only ever carries `-p`/`--`/destination — no `-o` — so nothing can
+        // override accept-new. If a future "advanced options" feature lets a host
+        // carry custom `-o` flags, inject accept-new *after* them (which means
+        // restructuring sshArguments, since it ends with `-- destination`).
         let hasPassword = !(session.password ?? "").isEmpty
         if hasPassword || session.acceptNewHostKey {
             options += ["-o", "StrictHostKeyChecking=accept-new"]

@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import OSLog
 
 /// Top-level app model: owns discovery, the user's saved hosts, and the open
 /// terminal tabs. A single instance is injected into the SwiftUI environment.
@@ -20,6 +21,9 @@ final class AppState: ObservableObject {
         /// The fingerprint of the key the server now presents (for verification).
         let fingerprint: String?
     }
+
+    private static let log = Logger(
+        subsystem: "com.blackmirrorstudio.sshmagic", category: "appstate")
 
     let discovery = DiscoveryManager()
 
@@ -216,6 +220,12 @@ final class AppState: ObservableObject {
     /// If so, raise the overwrite prompt. Anything else (auth failure, network
     /// drop, unknown host) returns nil and is left as the normal closed tab.
     private func diagnoseHostKey(for session: TerminalSession) {
+        // A post-overwrite reconnect (acceptNewHostKey) must never re-trigger the
+        // prompt: if it still fails that's a deeper problem, not a key change to
+        // re-ask about. This is the definitive guard against the prompt looping,
+        // even if `ssh-keygen -R` reported success without actually removing the
+        // entry (e.g. a locked known_hosts).
+        guard !session.acceptNewHostKey else { return }
         // One probe/alert at a time, and only while the tab is still open.
         guard hostKeyAlert == nil,
             sessions.contains(where: { $0.id == session.id })
@@ -223,13 +233,18 @@ final class AppState: ObservableObject {
         let host = session.host
         let sessionID = session.id
         Task { @MainActor in
-            // Re-check `hostKeyAlert` after the await: two sessions failing at
-            // once both clear the synchronous guard above before either probe
-            // finishes, so without this the second would clobber the first alert.
             guard let changed = await HostKeyCheck.detectChangedKey(for: host),
-                self.hostKeyAlert == nil,
                 self.sessions.contains(where: { $0.id == sessionID })
             else { return }
+            // Re-check after the await: two sessions failing at once both clear
+            // the synchronous guard above before either probe finishes. We only
+            // show one alert at a time — log the runner-up rather than dropping
+            // it silently or clobbering the visible one.
+            guard self.hostKeyAlert == nil else {
+                Self.log.notice(
+                    "Host key change for \(host.hostname, privacy: .public) not shown — an alert is already visible")
+                return
+            }
             self.hostKeyAlert = HostKeyAlert(
                 sessionID: sessionID, host: host, fingerprint: changed.newFingerprint)
         }
