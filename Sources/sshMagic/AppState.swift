@@ -33,6 +33,10 @@ final class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     /// Logins entered this run, so reconnecting doesn't re-prompt.
     private var sessionCredentials: [String: Credentials] = [:]
+    /// Hosts with a biometric unlock currently in flight, so a rapid second
+    /// connect request (e.g. a double-click) doesn't fire a second Touch ID
+    /// prompt and open a duplicate tab.
+    private var biometricInFlight: Set<String> = []
     /// Last username typed, used to pre-fill the sheet for new hosts.
     private var lastUsername: String =
         UserDefaults.standard.string(forKey: "lastUsername") ?? NSUserName()
@@ -105,7 +109,13 @@ final class AppState: ObservableObject {
             connectWithStoredPassword(host: host, username: username, account: account)
             return
         }
+        // Drop a second concurrent request for the same host: both calls arrive
+        // on the main actor before the auth Task runs, so without this guard a
+        // double-click would prompt twice and open two identical tabs.
+        guard !biometricInFlight.contains(host.id) else { return }
+        biometricInFlight.insert(host.id)
         Task { @MainActor in
+            defer { self.biometricInFlight.remove(host.id) }
             let ok = await BiometricAuth.authenticate(
                 reason: "Unlock the saved password for \(host.displayName)")
             if ok {

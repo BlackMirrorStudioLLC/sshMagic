@@ -82,6 +82,25 @@ a meaningful rewrite. The non‑sandboxed `Developer ID + notarization` path
 (direct download or a non‑MAS storefront) ships the current architecture
 unchanged and is the recommended route for v1. See `scripts/sshMagic.entitlements`.
 
+## Security & privacy
+
+- **Stored passwords are app‑gated by Touch ID, not OS‑level biometric‑locked.**
+  Passwords live in the macOS Keychain as standard `WhenUnlocked` items and the
+  Touch ID prompt is enforced by the app before each use. A hardware‑backed
+  biometric Keychain ACL needs the `keychain‑access‑groups` entitlement, which an
+  ad‑hoc‑signed build can't obtain (the write fails with `-34018`). Consequence:
+  another process running as the same user (a debugger, `security
+  find‑generic‑password`, or same‑UID malware) can read the stored password
+  without passing the Touch ID gate. Treat the gate as a convenience lock, not an
+  OS‑level secret seal.
+- **Bonjour discovery runs automatically at launch.** sshMagic browses for
+  `_ssh._tcp` over multicast mDNS as soon as it opens, which is network‑visible
+  and may be unexpected on corporate networks. The active TCP‑22 subnet sweep, by
+  contrast, only runs when you explicitly start a scan.
+- Passwords are never written to `hosts.json` or placed on the `ssh` command
+  line; they reach `ssh` only through a single‑session `SSH_ASKPASS` helper
+  (0600 file in a 0700 per‑user temp dir, swept on exit and at next launch).
+
 ## Architecture
 
 ```
