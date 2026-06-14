@@ -41,9 +41,12 @@ final class RemoteStatsMonitor: ObservableObject {
     init(host: Host, controlPath: String) {
         self.host = host
         self.controlPath = controlPath
-        Self.instanceCount += 1
-        // Spread the first sample across the interval (0, ~0.4s, ~0.8s, …).
+        // Spread the first sample across the interval (0, ~0.4s, ~0.8s, …) so
+        // multiple tabs don't fork their `ssh` at the same instant. The first
+        // instance gets offset 0; the counter only ever feeds this `% 6` ring,
+        // so its unbounded growth is harmless.
         stagger = Double(Self.instanceCount % 6) * (interval / 6)
+        Self.instanceCount += 1
     }
 
     func start() {

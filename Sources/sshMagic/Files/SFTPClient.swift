@@ -49,8 +49,9 @@ actor SFTPClient {
     func connect() async throws {
         for _ in 0..<25 {
             if await controlSocketIsUp() { return }
-            if Task.isCancelled { return }
-            try? await Task.sleep(nanoseconds: 800_000_000)
+            // `try await` (not `try?`) so a cancellation arriving *during* the
+            // sleep propagates immediately instead of looping for up to ~20s.
+            try await Task.sleep(nanoseconds: 800_000_000)
         }
         throw SFTPError.notConnected
     }
@@ -97,6 +98,11 @@ actor SFTPClient {
         let trimmed = remotePath.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasPrefix("/"), trimmed != "/" else {
             throw SFTPError.command("Refusing to delete a relative or root path.")
+        }
+        // Reject any `..` segment so a path can't climb out of its directory
+        // (defence-in-depth: basenames are already stripped upstream).
+        guard !trimmed.components(separatedBy: "/").contains("..") else {
+            throw SFTPError.command("Refusing to delete a path containing '..'.")
         }
         // Reject control characters (e.g. an embedded newline a hostile server
         // could sneak into a path) before building the remote command.
