@@ -142,10 +142,15 @@ struct SSHTerminalView: NSViewRepresentable {
             Task { @MainActor in
                 self.session.isConnected = false
                 self.session.exitCode = exitCode
-                // 255 is ssh's own failure code (connection/host-key/etc.), not a
-                // remote shell's exit — the only case worth probing for a changed
-                // host key. A clean logout exits 0 (or the command's own code).
-                if exitCode == 255 {
+                // Probe for a changed host key on any abnormal exit. We must NOT
+                // match a specific code: SwiftTerm reports the *raw* waitpid
+                // status here (LocalProcess passes `waitpid`'s status word), so
+                // ssh's exit 255 arrives as 0xFF00 (65280), not 255. Both a clean
+                // logout and a failure agree only on 0, so treat anything
+                // non-zero (or nil from an IO error) as worth a probe —
+                // detectChangedKey's known_hosts precheck + banner match is the
+                // real filter, so a needless probe just returns nil.
+                if exitCode != 0 {
                     self.session.onEarlyExit?(exitCode)
                 }
             }
