@@ -4,14 +4,16 @@ import XCTest
 
 final class AskPassTests: XCTestCase {
     /// Run the generated helper exactly as ssh would (it execs SSH_ASKPASS and
-    /// reads stdout) and confirm it emits the password — and only once, since it
-    /// self-deletes the backing file.
-    func testHelperEmitsPasswordThenSelfConsumes() throws {
+    /// reads stdout) and confirm it emits the password — repeatedly. The helper
+    /// deliberately does NOT self-delete: OpenSSH may invoke askpass more than
+    /// once per session (a retry, or a host-key confirm before the password),
+    /// and a consumed file would feed an empty password on the second call. The
+    /// backing file is removed when the session ends (cleanup of cleanupURL).
+    func testHelperEmitsPasswordOnRepeatedInvocations() throws {
         let password = "p@ss w0rd! with spaces & 'quotes'"
         guard let setup = AskPass.make(password: password) else {
             return XCTFail("AskPass.make returned nil")
         }
-        defer { AskPass.cleanup(setup.cleanupURL) }
 
         // ssh requires SSH_ASKPASS_REQUIRE=force to use the helper despite a tty.
         XCTAssertTrue(setup.environment.contains("SSH_ASKPASS_REQUIRE=force"))
@@ -21,8 +23,11 @@ final class AskPassTests: XCTestCase {
         let scriptPath = String(askpassEntry.dropFirst("SSH_ASKPASS=".count))
 
         XCTAssertEqual(try runHelper(scriptPath), password)
-        // The backing password file is consumed on first read; a second call
-        // yields nothing (so a stale password can't be replayed).
+        // Idempotent across invocations within the session.
+        XCTAssertEqual(try runHelper(scriptPath), password)
+
+        // Cleanup removes the backing file, after which the helper emits nothing.
+        AskPass.cleanup(setup.cleanupURL)
         XCTAssertEqual(try runHelper(scriptPath), "")
     }
 
