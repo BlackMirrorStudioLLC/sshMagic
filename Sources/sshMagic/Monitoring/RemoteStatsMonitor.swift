@@ -51,6 +51,9 @@ final class RemoteStatsMonitor: ObservableObject {
         Self.instanceCount += 1
     }
 
+    /// Whether the polling loop is currently active (diagnostics/tests).
+    var isPolling: Bool { loop != nil }
+
     func start() {
         guard loop == nil else { return }
         loop = Task { [weak self] in

@@ -21,6 +21,18 @@ enum KnownHosts {
 
         DispatchQueue.global(qos: .utility).async {
             for target in targets {
+                // Defence-in-depth against a hostile mDNS hostname that begins
+                // with `-`. ssh-keygen's `-R` already consumes the next argv as
+                // its operand regardless of a leading dash (so `-R -evil` removes
+                // a host literally named `-evil`, it is NOT parsed as an option —
+                // verified), so this is belt-and-suspenders. We deliberately do
+                // NOT use `-R -- <target>`: ssh-keygen treats `--` as the operand
+                // and rejects the call with "Too many arguments". A valid
+                // hostname never starts with `-`, so simply skip one that does.
+                guard !target.hasPrefix("-") else {
+                    log.error("Refusing ssh-keygen -R for a leading-dash target: \(target, privacy: .public)")
+                    continue
+                }
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
                 process.arguments = ["-R", target]

@@ -32,11 +32,18 @@ final class FilePanelModel: ObservableObject {
     }
 
     /// Re-attempt after a failure (e.g. the terminal wasn't connected yet).
+    /// A no-op while a connect is already in flight (the `isConnecting` guard in
+    /// `connectAndLoad`); that's intentional — stacking attempts would queue
+    /// multiple ~20s socket waits. The user still sees feedback because
+    /// `isLoading` stays true and the spinner shows for the in-flight attempt.
     func retry() async { await connectAndLoad() }
 
     func refresh() async { await load(path) }
 
     private func connectAndLoad() async {
+        // Drop overlapping attempts (rapid Retry, or start()+retry() racing):
+        // only one connect runs at a time. isLoading remains the user-visible
+        // signal while it's in flight.
         guard !isConnecting else { return }
         isConnecting = true
         defer { isConnecting = false }

@@ -89,11 +89,22 @@ actor SFTPClient {
         _ = try await runSFTP("put \(try Self.quote(local.path)) \(try Self.quote(remotePath))")
     }
 
-    /// Delete a file or directory over the master. Files go through the SFTP
-    /// protocol's native remove — no shell involved at all, so a hostile
-    /// filename can't reach a command line. Directories need recursion, which
-    /// SFTP can't do, so they fall back to a tightly-guarded `rm -rf` over the
-    /// mux socket. Callers should confirm first.
+    /// Delete a file or directory over the master. Callers should confirm first.
+    ///
+    /// Strategy is a deliberate hybrid:
+    /// - Files use the SFTP protocol's native remove (SSH_FXP_REMOVE). No shell
+    ///   is involved, and it also works on locked-down `internal-sftp`-only
+    ///   servers that refuse a shell exec.
+    /// - Directories shell out to a tightly-guarded `rm -rf` over the mux socket,
+    ///   because SFTP can't express a recursive delete and walking the tree with
+    ///   per-file SFTP calls would be one process per file.
+    ///
+    /// We do NOT switch directory deletes to SFTP-native: sftp's own `rm`
+    /// glob-expands its argument (so a name containing `*`/`?`/`[` could match
+    /// and delete siblings), whereas the single-quoted shell form below disables
+    /// all globbing and word-splitting and is exact. The path guards plus the
+    /// caller's confirmation dialog are the mitigations for the `rm -rf` blast
+    /// radius; the runtime confirmation is the "second pair of eyes".
     func remove(_ remotePath: String, isDirectory: Bool) async throws {
         // All guards below run on the RAW path, before any quoting/escaping —
         // keep them ahead of the quote step so e.g. the `..` check can't be
@@ -160,6 +171,11 @@ actor SFTPClient {
     /// inside the 3 s window, an op may fail once against the stale socket — the
     /// error surfaces in the panel and Retry recovers, so don't raise this TTL
     /// without weighing that against the extra `ssh -O check` forks it saves.
+    ///
+    /// Note this cache is also the socket guard for the directory `rm -rf` path
+    /// in remove(): a stale-but-cached "up" there just means the `ssh` exec
+    /// fails and the error surfaces — never a misdirected delete — but factor
+    /// that path in too before raising the TTL.
     private func controlSocketIsUp() async -> Bool {
         if let last = lastSocketOK, Date().timeIntervalSince(last) < 3 { return true }
         let result = try? await Self.run(
