@@ -143,7 +143,10 @@ actor SFTPClient {
     /// True when the terminal's master socket is live (`ssh -O check`). This is a
     /// fast local check (no network), and the result is cached for a couple of
     /// seconds so back-to-back operations (browse → list → transfer) don't each
-    /// fork an extra `ssh`.
+    /// fork an extra `ssh`. Trade-off: if the connection drops and reconnects
+    /// inside the 3 s window, an op may fail once against the stale socket — the
+    /// error surfaces in the panel and Retry recovers, so don't raise this TTL
+    /// without weighing that against the extra `ssh -O check` forks it saves.
     private func controlSocketIsUp() async -> Bool {
         if let last = lastSocketOK, Date().timeIntervalSince(last) < 3 { return true }
         let result = try? await Self.run(

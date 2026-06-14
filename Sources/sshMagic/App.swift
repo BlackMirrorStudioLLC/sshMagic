@@ -25,6 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var closeInterceptor: WindowCloseInterceptor?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Remove any temp artifacts a previous run left behind on crash/force-quit
+        // (edit/download staging files, askpass dirs, sockets) before we make new
+        // ones. Safe here: no session has been created yet this launch.
+        TempFiles.sweepStaleArtifacts()
+
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
 
