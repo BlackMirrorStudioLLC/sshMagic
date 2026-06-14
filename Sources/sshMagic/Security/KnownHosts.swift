@@ -30,16 +30,18 @@ enum KnownHosts {
                 do {
                     try process.run()
                 } catch {
+                    let reason = error.localizedDescription
                     log.error(
-                        "ssh-keygen -R \(target, privacy: .public) failed to launch: \(error.localizedDescription, privacy: .public)")
+                        "ssh-keygen -R \(target, privacy: .public) failed to launch: \(reason, privacy: .public)")
                     continue
                 }
                 let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
                 if process.terminationStatus != 0 {
+                    let code = process.terminationStatus
                     let detail = String(bytes: errData, encoding: .utf8) ?? ""
                     log.error(
-                        "ssh-keygen -R \(target, privacy: .public) exited \(process.terminationStatus): \(detail, privacy: .public)")
+                        "ssh-keygen -R \(target, privacy: .public) exited \(code): \(detail, privacy: .public)")
                 }
             }
         }
