@@ -86,22 +86,36 @@ final class AppState: ObservableObject {
 
         let account = KeychainStore.account(username: username, hostID: host.id)
         guard KeychainStore.hasPassword(account: account) else {
-            // Username known, no usable saved password — connect and let ssh
-            // prompt (or, for a legacy item, the sheet will re-save it).
-            cacheAndOpen(host: host, username: username, password: nil)
+            // Username known but no saved password — raise the sheet (pre-filled
+            // with the username) so the password can be entered and stored,
+            // rather than silently letting ssh prompt in the terminal where it
+            // can never be remembered. Leave the password blank to use a key.
+            pendingConnect = host
             return
         }
 
-        // A saved password exists. Reading it prompts for Touch ID (when the item
-        // is biometric-protected); on cancel/failure we fall back to typing.
+        // A saved password exists. Gate its use with Touch ID (when available),
+        // then read it and connect; on cancel/failure fall back to the sheet.
+        guard BiometricAuth.isAvailable else {
+            connectWithStoredPassword(host: host, username: username, account: account)
+            return
+        }
         Task { @MainActor in
-            let stored = await KeychainStore.password(
-                account: account, prompt: "Unlock the saved password for \(host.displayName)")
-            if let stored {
-                self.cacheAndOpen(host: host, username: username, password: stored)
+            let ok = await BiometricAuth.authenticate(
+                reason: "Unlock the saved password for \(host.displayName)")
+            if ok {
+                self.connectWithStoredPassword(host: host, username: username, account: account)
             } else {
                 self.pendingConnect = host
             }
+        }
+    }
+
+    private func connectWithStoredPassword(host: Host, username: String, account: String) {
+        if let stored = KeychainStore.password(account: account) {
+            cacheAndOpen(host: host, username: username, password: stored)
+        } else {
+            pendingConnect = host
         }
     }
 
