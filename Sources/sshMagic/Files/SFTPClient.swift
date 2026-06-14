@@ -88,9 +88,15 @@ actor SFTPClient {
     /// Delete a file or directory (recursively). Runs `rm -rf` over the master,
     /// so it handles non-empty directories too — callers should confirm first.
     func remove(_ remotePath: String) async throws {
+        // Never run `rm -rf` on an empty or root path — a basename-stripping bug
+        // upstream must not become a catastrophic remote delete.
+        let trimmed = remotePath.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed != "/" else {
+            throw SFTPError.command("Refusing to delete an empty or root path.")
+        }
         guard await controlSocketIsUp() else { throw SFTPError.notConnected }
         // Single-quote for the remote shell; `--` stops option injection.
-        let escaped = remotePath.replacingOccurrences(of: "'", with: "'\\''")
+        let escaped = trimmed.replacingOccurrences(of: "'", with: "'\\''")
         let result = try await Self.run(
             "/usr/bin/ssh",
             [

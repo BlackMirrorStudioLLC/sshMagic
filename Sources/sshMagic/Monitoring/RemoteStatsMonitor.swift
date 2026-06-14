@@ -141,8 +141,10 @@ final class RemoteStatsMonitor: ObservableObject {
         if let prev = prevNet {
             let dt = now.timeIntervalSince(prev.at)
             if dt > 0 {
-                stats.netDownMbps = Double(rx - prev.rx) * 8 / 1_000_000 / dt
-                stats.netUpMbps = Double(tx - prev.tx) * 8 / 1_000_000 / dt
+                // Clamp to 0: a host reboot or counter wrap between samples makes
+                // the delta negative, which would show as negative throughput.
+                stats.netDownMbps = max(0, Double(rx - prev.rx) * 8 / 1_000_000 / dt)
+                stats.netUpMbps = max(0, Double(tx - prev.tx) * 8 / 1_000_000 / dt)
             }
         }
         prevNet = NetSample(rx: rx, tx: tx, at: now)

@@ -126,6 +126,12 @@ final class FilePanelModel: ObservableObject {
     func edit(_ file: RemoteFile) async {
         guard !file.isDirectory else { return }
         let remotePath = joined(path, file.name)
+        // Already open for editing → just bring its editor forward, rather than
+        // creating a second watcher that would race uploads with the first.
+        if let existing = editSessions.first(where: { $0.remotePath == remotePath }) {
+            Editor.open(existing.localURL)
+            return
+        }
         transfer = "Opening \(file.name)…"
         do {
             let dir = FileManager.default.temporaryDirectory
