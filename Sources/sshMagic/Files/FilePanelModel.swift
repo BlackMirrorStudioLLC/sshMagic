@@ -159,17 +159,19 @@ final class FilePanelModel: ObservableObject {
                 guard let modified = EditSession.modified(session.localURL),
                     modified > session.lastModified
                 else { continue }
-                session.lastModified = modified
-                await self.pushEdit(session)
+                await self.pushEdit(session, modified: modified)
             }
         }
     }
 
-    private func pushEdit(_ session: EditSession) async {
+    private func pushEdit(_ session: EditSession, modified: Date) async {
         transfer = "Saving \(session.displayName)…"
         defer { transfer = nil }
         do {
             try await client.upload(local: session.localURL, toRemotePath: session.remotePath)
+            // Only mark this version synced on success — otherwise a failed
+            // upload would be skipped on the next poll instead of retried.
+            session.lastModified = modified
             // If we're still showing the folder the file lives in, refresh so its
             // updated modification time appears right away.
             if (session.remotePath as NSString).deletingLastPathComponent == path {

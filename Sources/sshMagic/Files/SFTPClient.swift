@@ -133,6 +133,9 @@ actor SFTPClient {
     private func runSFTP(_ command: String) async throws -> String {
         guard await controlSocketIsUp() else { throw SFTPError.notConnected }
 
+        // No `-P <port>`: this always rides the master over ControlPath, and the
+        // controlSocketIsUp() gate above blocks any direct-connection fallback,
+        // so the port is already fixed by the master connection.
         let args = [
             "-o", "ControlPath=\(controlPath)",
             "-o", "ControlMaster=no",
