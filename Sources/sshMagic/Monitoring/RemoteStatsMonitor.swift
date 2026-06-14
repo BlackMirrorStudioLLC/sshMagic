@@ -21,7 +21,9 @@ final class RemoteStatsMonitor: ObservableObject {
 
     /// Per-instance startup offset so multiple tabs' pollers don't all fork an
     /// `ssh` at the same instant (e.g. when the bar is toggled on with N tabs).
-    private static var instanceCount = 0
+    /// Explicitly `@MainActor` so the shared counter's access is a compile-time
+    /// guarantee, not just a happens-to-hold-today invariant.
+    @MainActor private static var instanceCount = 0
     private let stagger: TimeInterval
 
     /// A sentinel that can't appear in `/proc` or `who` output, so a stray line

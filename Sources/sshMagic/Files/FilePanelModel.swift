@@ -12,6 +12,9 @@ final class FilePanelModel: ObservableObject {
 
     private let client: SFTPClient
     private var started = false
+    /// True while a connect attempt is in flight, so rapid Retry taps don't
+    /// stack overlapping attempts (each looping up to ~20s in SFTPClient.connect).
+    private var isConnecting = false
     /// Whether we've shown the home directory yet (so retry knows where to go).
     private var landed = false
     /// Files currently open for editing (kept alive so their watchers run).
@@ -34,6 +37,9 @@ final class FilePanelModel: ObservableObject {
     func refresh() async { await load(path) }
 
     private func connectAndLoad() async {
+        guard !isConnecting else { return }
+        isConnecting = true
+        defer { isConnecting = false }
         isLoading = true
         error = nil
         do {
@@ -50,6 +56,11 @@ final class FilePanelModel: ObservableObject {
     }
 
     func open(_ file: RemoteFile) async {
+        // Symlinks are always treated as navigable here: `ls` on a symlink-to-dir
+        // descends into it, and `ls` on a symlink-to-file simply lists that one
+        // file. We deliberately don't open a symlink in the editor — the target's
+        // real path is ambiguous, so editing/saving back to the link path could
+        // desync the watcher's mtime check. Plain files go through `edit()`.
         guard file.isDirectory || file.isSymlink else { return }
         await load(joined(path, file.name))
     }
