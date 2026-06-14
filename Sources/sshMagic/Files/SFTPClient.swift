@@ -85,18 +85,20 @@ actor SFTPClient {
         _ = try await runSFTP("put \(Self.quote(local.path)) \(Self.quote(remotePath))")
     }
 
-    /// Delete a file or directory (recursively). Runs `rm -rf` over the master,
-    /// so it handles non-empty directories too — callers should confirm first.
-    func remove(_ remotePath: String) async throws {
-        // Never run `rm -rf` on an empty or root path — a basename-stripping bug
-        // upstream must not become a catastrophic remote delete.
+    /// Delete a file or directory over the master. Directories use `rm -rf`
+    /// (handles non-empty); files use plain `rm -f` to keep the blast radius
+    /// minimal. Callers should confirm first.
+    func remove(_ remotePath: String, isDirectory: Bool) async throws {
+        // Only ever delete an absolute, non-root path — a basename-stripping or
+        // relative-path bug upstream must not become a catastrophic remote rm.
         let trimmed = remotePath.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, trimmed != "/" else {
-            throw SFTPError.command("Refusing to delete an empty or root path.")
+        guard trimmed.hasPrefix("/"), trimmed != "/" else {
+            throw SFTPError.command("Refusing to delete a relative or root path.")
         }
         guard await controlSocketIsUp() else { throw SFTPError.notConnected }
         // Single-quote for the remote shell; `--` stops option injection.
         let escaped = trimmed.replacingOccurrences(of: "'", with: "'\\''")
+        let flags = isDirectory ? "-rf" : "-f"
         let result = try await Self.run(
             "/usr/bin/ssh",
             [
@@ -104,7 +106,7 @@ actor SFTPClient {
                 "-o", "ControlMaster=no",
                 "-o", "BatchMode=yes",
                 host.userAtHost,
-                "rm -rf -- '\(escaped)'",
+                "rm \(flags) -- '\(escaped)'",
             ])
         guard result.status == 0 else {
             throw SFTPError.command(result.stderr.isEmpty ? "Delete failed." : result.stderr)

@@ -22,7 +22,12 @@ final class AppState: ObservableObject {
     /// Sessions whose SFTP file browser is currently visible.
     @Published var filesVisible: Set<TerminalSession.ID> = []
     /// Whether the remote-monitoring stats bar is shown under terminals.
-    @Published var showStatsBar = true
+    /// Persisted so the choice survives a restart.
+    @Published var showStatsBar =
+        UserDefaults.standard.object(forKey: "showStatsBar") as? Bool ?? true
+    {
+        didSet { UserDefaults.standard.set(showStatsBar, forKey: "showStatsBar") }
+    }
 
     private let savedHostsURL: URL
     private var cancellables = Set<AnyCancellable>()

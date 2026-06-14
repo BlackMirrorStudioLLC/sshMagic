@@ -19,6 +19,11 @@ final class RemoteStatsMonitor: ObservableObject {
     private var prevCPU: CPUSample?
     private var prevNet: NetSample?
 
+    /// Per-instance startup offset so multiple tabs' pollers don't all fork an
+    /// `ssh` at the same instant (e.g. when the bar is toggled on with N tabs).
+    private static var instanceCount = 0
+    private let stagger: TimeInterval
+
     /// One command that emits each `/proc` source under a marker we split on.
     private static let command = [
         "echo @CPU", "head -1 /proc/stat",
@@ -32,14 +37,21 @@ final class RemoteStatsMonitor: ObservableObject {
     init(host: Host, controlPath: String) {
         self.host = host
         self.controlPath = controlPath
+        Self.instanceCount += 1
+        // Spread the first sample across the interval (0, ~0.4s, ~0.8s, …).
+        stagger = Double(Self.instanceCount % 6) * (interval / 6)
     }
 
     func start() {
         guard loop == nil else { return }
         loop = Task { [weak self] in
+            guard let self else { return }
+            if self.stagger > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(self.stagger * 1_000_000_000))
+            }
             while !Task.isCancelled {
-                await self?.sample()
-                try? await Task.sleep(nanoseconds: UInt64((self?.interval ?? 2.5) * 1_000_000_000))
+                await self.sample()
+                try? await Task.sleep(nanoseconds: UInt64(self.interval * 1_000_000_000))
             }
         }
     }

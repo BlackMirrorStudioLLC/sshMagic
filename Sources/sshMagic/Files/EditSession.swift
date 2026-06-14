@@ -37,8 +37,13 @@ final class EditSession {
 /// way to launch a GUI app for a file (the `code` shell-script CLI often fails
 /// to launch when run from a sandboxless Process).
 enum Editor {
+    private static let vscodePaths = [
+        "/Applications/Visual Studio Code.app",
+        "\(NSHomeDirectory())/Applications/Visual Studio Code.app",
+    ]
+
     static func open(_ url: URL) {
-        if FileManager.default.fileExists(atPath: "/Applications/Visual Studio Code.app") {
+        if vscodePaths.contains(where: { FileManager.default.fileExists(atPath: $0) }) {
             run(["-a", "Visual Studio Code", url.path])
         } else {
             // `-t` forces the default *text* editor (e.g. TextEdit) rather than

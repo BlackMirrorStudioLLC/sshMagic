@@ -43,6 +43,9 @@ final class FilePanelModel: ObservableObject {
         } catch {
             self.error = error.localizedDescription
             isLoading = false
+            // Allow a fresh attempt if the panel is hidden and reopened (e.g. the
+            // terminal connects after the panel was first shown).
+            started = false
         }
     }
 
@@ -114,7 +117,7 @@ final class FilePanelModel: ObservableObject {
     /// Delete a file or directory, then refresh.
     func delete(_ file: RemoteFile) async {
         do {
-            try await client.remove(joined(path, file.name))
+            try await client.remove(joined(path, file.name), isDirectory: file.isDirectory)
             await refresh()
         } catch {
             self.error = error.localizedDescription
