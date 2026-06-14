@@ -16,7 +16,9 @@ final class AppState: ObservableObject {
 
     @Published var savedHosts: [Host] = []
     @Published var sessions: [TerminalSession] = []
-    @Published var selectedSessionID: TerminalSession.ID?
+    @Published var selectedSessionID: TerminalSession.ID? {
+        didSet { updateActiveStatsPolling() }
+    }
     /// Non-nil while the credential sheet should be shown for this host.
     @Published var pendingConnect: Host?
     /// Sessions whose SFTP file browser is currently visible.
@@ -181,16 +183,37 @@ final class AppState: ObservableObject {
         resolved.username = username
         let session = TerminalSession(host: resolved, password: password)
         sessions.append(session)
+        // Setting the selection starts this tab's stats poller (and pauses the
+        // previously-selected one) via updateActiveStatsPolling().
         selectedSessionID = session.id
-        if showStatsBar { session.stats.start() }
     }
 
-    /// Show or hide the remote-monitoring bar, starting/stopping the per-session
-    /// pollers so they only run while the bar is visible.
+    /// Show or hide the remote-monitoring bar, starting/stopping the pollers so
+    /// they only run while the bar is visible.
     func toggleStatsBar() {
         showStatsBar.toggle()
+        if showStatsBar {
+            updateActiveStatsPolling()
+        } else {
+            for session in sessions { session.stats.stop() }
+        }
+    }
+
+    /// Poll remote vitals only for the visible (selected) tab. Its stats bar is
+    /// the only one on screen, so polling background tabs would fork an `ssh`
+    /// every few seconds for nothing — the cost the review flagged for users
+    /// with many tabs open. Each tab has its own control socket, so there's no
+    /// cross-tab poller to share; pausing the hidden ones is the win. Switching
+    /// tabs starts the newly-selected poller (CPU/net are deltas, so they read
+    /// "—" for the first interval after a switch).
+    private func updateActiveStatsPolling() {
+        guard showStatsBar else { return }
         for session in sessions {
-            if showStatsBar { session.stats.start() } else { session.stats.stop() }
+            if session.id == selectedSessionID {
+                session.stats.start()
+            } else {
+                session.stats.stop()
+            }
         }
     }
 

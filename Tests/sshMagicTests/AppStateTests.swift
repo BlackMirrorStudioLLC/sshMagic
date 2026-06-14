@@ -83,6 +83,36 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(app.sessions.isEmpty)
     }
 
+    /// Only the visible (selected) tab should poll remote stats — background
+    /// tabs would fork an `ssh` every few seconds for an off-screen stats bar.
+    func testOnlySelectedSessionPollsStats() {
+        let app = AppState()
+        let original = app.showStatsBar
+        app.showStatsBar = true
+        defer { app.showStatsBar = original }
+
+        app.connect(
+            host: Host(hostname: "10.9.9.21", source: .scan),
+            username: "u", password: "", remember: false)
+        app.connect(
+            host: Host(hostname: "10.9.9.22", source: .scan),
+            username: "u", password: "", remember: false)
+        let first = app.sessions[0]
+        let second = app.sessions[1]
+
+        // The most recently opened tab is selected, so only it polls.
+        XCTAssertFalse(first.stats.isPolling)
+        XCTAssertTrue(second.stats.isPolling)
+
+        // Switching the selection moves the single active poller.
+        app.selectedSessionID = first.id
+        XCTAssertTrue(first.stats.isPolling)
+        XCTAssertFalse(second.stats.isPolling)
+
+        app.closeSession(first)
+        app.closeSession(second)
+    }
+
     func testSuggestedUsernameFallsBackToLastUsed() {
         let app = AppState()
         let host = Host(hostname: "10.9.9.11", source: .scan)
