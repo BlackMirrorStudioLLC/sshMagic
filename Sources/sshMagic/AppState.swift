@@ -228,13 +228,33 @@ final class AppState: ObservableObject {
         persistSavedHosts()
     }
 
+    /// Apply edits to a saved host. If the connection identity (host/port) or
+    /// username changed, the old Keychain password and known_hosts key are no
+    /// longer valid for it, so they're cleared (the password will be re-asked on
+    /// next connect). A display-name/username-preserving edit keeps the password.
+    func updateSavedHost(original: Host, to edited: Host) {
+        let accountUnchanged = original.id == edited.id && original.username == edited.username
+        savedHosts.removeAll { $0.id == original.id }
+        if !accountUnchanged, let username = original.username, !username.isEmpty {
+            KeychainStore.deletePassword(
+                account: KeychainStore.account(username: username, hostID: original.id))
+        }
+        // If the host/port changed, the old saved key won't match the new target.
+        if original.id != edited.id { KnownHosts.forget(original) }
+        upsertSavedHost(edited)
+
+        // Keep saved credentials in sync for any open/cached session of this host.
+        sessionCredentials[original.id] = nil
+    }
+
     func removeSavedHost(_ host: Host) {
         savedHosts.removeAll { $0.id == host.id }
-        // Forget any stored password too.
+        // Forget the stored password and the SSH host key for this box.
         if let username = host.username, !username.isEmpty {
             KeychainStore.deletePassword(
                 account: KeychainStore.account(username: username, hostID: host.id))
         }
+        KnownHosts.forget(host)
         persistSavedHosts()
     }
 

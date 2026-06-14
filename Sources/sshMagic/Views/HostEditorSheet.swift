@@ -1,15 +1,31 @@
 import SwiftUI
 
-/// Minimal "add a host by hand" form for endpoints that discovery won't find
-/// (off-subnet boxes, jump targets, anything you reach by DNS name).
-struct AddHostSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    let onAdd: (Host) -> Void
+/// Form for adding a host by hand, or editing a saved one. Covers endpoints
+/// discovery won't find (off-subnet boxes, jump targets, DNS names) and lets you
+/// change a saved connection's details.
+struct HostEditorSheet: View {
+    /// The host being edited, or nil when adding a new one.
+    let editing: Host?
+    let onSave: (Host) -> Void
 
-    @State private var hostname = ""
-    @State private var port = "22"
-    @State private var username = ""
-    @State private var displayName = ""
+    @Environment(\.dismiss) private var dismiss
+    @State private var hostname: String
+    @State private var port: String
+    @State private var username: String
+    @State private var displayName: String
+
+    init(editing: Host? = nil, onSave: @escaping (Host) -> Void) {
+        self.editing = editing
+        self.onSave = onSave
+        _hostname = State(initialValue: editing?.hostname ?? "")
+        _port = State(initialValue: editing.map { String($0.port) } ?? "22")
+        _username = State(initialValue: editing?.username ?? "")
+        // Only pre-fill the display name if it's a custom label (not just the host).
+        let label = editing.flatMap { $0.displayName == $0.hostname ? nil : $0.displayName }
+        _displayName = State(initialValue: label ?? "")
+    }
+
+    private var isEditing: Bool { editing != nil }
 
     private var isValid: Bool {
         !hostname.trimmingCharacters(in: .whitespaces).isEmpty && Int(port) != nil
@@ -17,7 +33,7 @@ struct AddHostSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Add Host")
+            Text(isEditing ? "Edit Host" : "Add Host")
                 .font(.title2.bold())
 
             Form {
@@ -32,7 +48,7 @@ struct AddHostSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Add & Connect") {
+                Button(isEditing ? "Save" : "Add & Connect") {
                     let host = Host(
                         hostname: hostname.trimmingCharacters(in: .whitespaces),
                         port: Int(port) ?? 22,
@@ -40,7 +56,7 @@ struct AddHostSheet: View {
                         username: username.isEmpty ? nil : username,
                         source: .manual
                     )
-                    onAdd(host)
+                    onSave(host)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
