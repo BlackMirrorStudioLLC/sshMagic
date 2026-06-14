@@ -174,7 +174,11 @@ final class FilePanelModel: ObservableObject {
     }
 
     private func startWatching(_ session: EditSession) {
-        session.watcher = Task { [weak self] in
+        // Explicitly @MainActor: the class is already main-actor-isolated (so an
+        // unstructured Task here inherits that), but spelling it out keeps the
+        // mutations of editSessions/transfer/error and the @MainActor EditSession
+        // calls below provably on the main actor under strict concurrency.
+        session.watcher = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard let self else { return }

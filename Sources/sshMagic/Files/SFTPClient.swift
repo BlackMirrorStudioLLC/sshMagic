@@ -120,6 +120,9 @@ actor SFTPClient {
                 "-o", "ControlPath=\(controlPath)",
                 "-o", "ControlMaster=no",
                 "-o", "BatchMode=yes",
+                // `--` so a leading-`-` hostname can't become an ssh option; the
+                // inner `rm ... --` likewise protects the remote path.
+                "--",
                 host.userAtHost,
                 "rm \(flags) -- '\(escaped)'",
             ])
@@ -162,7 +165,8 @@ actor SFTPClient {
             "-o", "ControlPath=\(controlPath)",
             "-o", "ControlMaster=no",
             "-o", "BatchMode=yes",
-            "-b", "-", host.userAtHost,
+            // `--` stops a leading-`-` hostname being parsed as an sftp option.
+            "-b", "-", "--", host.userAtHost,
         ]
         let result = try await Self.run("/usr/bin/sftp", args, input: command + "\n")
         guard result.status == 0 else {

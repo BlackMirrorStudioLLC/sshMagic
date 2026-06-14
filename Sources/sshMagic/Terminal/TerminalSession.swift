@@ -37,8 +37,13 @@ final class TerminalSession: ObservableObject, Identifiable {
         self.host = host
         self.password = password
         self.title = host.displayName
-        // Short path — AF_UNIX socket paths are capped near 104 chars.
-        let control = "/tmp/sshmagic-\(UUID().uuidString.prefix(8)).sock"
+        // Place the multiplex socket in the per-user temp dir (~/var/folders/.../T),
+        // NOT world-readable /tmp, so other local users can't even enumerate it.
+        // 16 hex chars (64 bits) is ample uniqueness while keeping the full path
+        // well under the ~104-char AF_UNIX cap (the per-user dir is ~49 chars).
+        let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16)
+        let control = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sshmagic-\(token).sock").path
         self.controlPath = control
         self.filePanel = FilePanelModel(host: host, controlPath: control)
         self.stats = RemoteStatsMonitor(host: host, controlPath: control)
