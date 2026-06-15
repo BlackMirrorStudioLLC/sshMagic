@@ -45,7 +45,7 @@ struct ContentView: View {
     private static func alertMessage(for alert: AppState.ActiveAlert) -> String {
         switch alert {
         case .changedKey(let info): return hostKeyMessage(for: info)
-        case .removalFailed(let message): return message
+        case .removalFailed(_, let message): return message
         }
     }
 

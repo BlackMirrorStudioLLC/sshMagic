@@ -26,12 +26,14 @@ final class AppState: ObservableObject {
     /// mutually exclusive, so one `.alert` modifier can present either.
     enum ActiveAlert: Identifiable {
         case changedKey(HostKeyAlert)
-        case removalFailed(message: String)
+        case removalFailed(id: UUID, message: String)
 
         var id: String {
             switch self {
             case .changedKey(let alert): return "changed-\(alert.id)"
-            case .removalFailed: return "removal-failed"
+            // Carry a UUID so two consecutive removal-failure alerts have
+            // distinct ids — SwiftUI skips re-presenting if the id is unchanged.
+            case .removalFailed(let id, _): return "removal-\(id)"
             }
         }
     }
@@ -289,6 +291,7 @@ final class AppState: ObservableObject {
                 // removal, and we must not clobber it.
                 self.presentOrQueue(
                     .removalFailed(
+                        id: UUID(),
                         message: "Couldn't remove the old host key for \(alert.host.displayName). "
                             + "Your known_hosts file may be read-only — remove the entry manually, "
                             + "then reconnect."))
