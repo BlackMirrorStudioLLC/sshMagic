@@ -66,9 +66,9 @@ final class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     /// Logins entered this run, so reconnecting doesn't re-prompt.
     private var sessionCredentials: [String: Credentials] = [:]
-    /// Changed-key alerts detected while another alert was already on screen,
-    /// presented serially as each is dismissed rather than dropped.
-    private var pendingHostKeyAlerts: [HostKeyAlert] = []
+    /// Alerts detected while another was already on screen, presented serially
+    /// as each is dismissed rather than dropped or clobbered.
+    private var pendingAlerts: [ActiveAlert] = []
     /// Hosts with a biometric unlock currently in flight, so a rapid second
     /// connect request (e.g. a double-click) doesn't fire a second Touch ID
     /// prompt and open a duplicate tab.
@@ -252,22 +252,24 @@ final class AppState: ObservableObject {
             else { return }
             let info = HostKeyAlert(
                 sessionID: sessionID, host: host, fingerprint: changed.newFingerprint)
-            if self.activeAlert == nil {
-                self.activeAlert = .changedKey(info)
-            } else {
-                // Another alert is up (e.g. a second tab also changed keys at the
-                // same moment). Queue this one and present it once the current is
-                // dismissed, rather than dropping it.
-                self.pendingHostKeyAlerts.append(info)
-                Self.log.notice(
-                    "Host key change for \(host.hostname, privacy: .public) queued behind the active alert")
-            }
+            self.presentOrQueue(.changedKey(info))
+        }
+    }
+
+    /// Show `alert` now if nothing is up, else queue it behind the current one
+    /// so a second detection (or a removal-failure landing during another
+    /// alert's async window) is never dropped or clobbered.
+    private func presentOrQueue(_ alert: ActiveAlert) {
+        if activeAlert == nil {
+            activeAlert = alert
+        } else {
+            pendingAlerts.append(alert)
         }
     }
 
     func dismissAlert() {
         activeAlert = nil
-        presentNextHostKeyAlert()
+        presentNextAlert()
     }
 
     /// Forget the stale key, then reconnect (auto-accepting the new key). The
@@ -280,30 +282,38 @@ final class AppState: ObservableObject {
             guard let self else { return }
             if removed {
                 self.reconnectAfterOverwrite(alert)
-                self.presentNextHostKeyAlert()
+                self.presentNextAlert()
             } else {
-                self.activeAlert = .removalFailed(
-                    message: "Couldn't remove the old host key for \(alert.host.displayName). "
-                        + "Your known_hosts file may be read-only — remove the entry manually, "
-                        + "then reconnect.")
+                // presentOrQueue (not a bare assignment): a concurrent session's
+                // changed-key alert may have filled the slot during the async
+                // removal, and we must not clobber it.
+                self.presentOrQueue(
+                    .removalFailed(
+                        message: "Couldn't remove the old host key for \(alert.host.displayName). "
+                            + "Your known_hosts file may be read-only — remove the entry manually, "
+                            + "then reconnect."))
             }
         }
     }
 
-    /// Present the next queued changed-key alert, if any. Deferred to a later
-    /// main-actor tick so SwiftUI registers the dismissal of the current alert
-    /// before the next one is set (otherwise the re-present can be missed).
-    private func presentNextHostKeyAlert() {
-        guard activeAlert == nil, !pendingHostKeyAlerts.isEmpty else { return }
+    /// Present the next queued alert, if any. Deferred to a later main-actor tick
+    /// so SwiftUI registers the dismissal of the current alert before the next is
+    /// set (otherwise the re-present can be missed).
+    private func presentNextAlert() {
+        guard activeAlert == nil, !pendingAlerts.isEmpty else { return }
         Task { @MainActor in
             guard self.activeAlert == nil else { return }
-            while !self.pendingHostKeyAlerts.isEmpty {
-                let next = self.pendingHostKeyAlerts.removeFirst()
-                // Skip any whose tab has since been closed.
-                if self.sessions.contains(where: { $0.id == next.sessionID }) {
-                    self.activeAlert = .changedKey(next)
-                    return
+            while !self.pendingAlerts.isEmpty {
+                let next = self.pendingAlerts.removeFirst()
+                // Skip a changed-key alert whose tab has since closed; always
+                // surface a removal-failure.
+                if case .changedKey(let info) = next,
+                    !self.sessions.contains(where: { $0.id == info.sessionID })
+                {
+                    continue
                 }
+                self.activeAlert = next
+                return
             }
         }
     }
@@ -313,7 +323,12 @@ final class AppState: ObservableObject {
             closeSession(dead)
         }
         let cred = sessionCredentials[alert.host.id]
-        let username = cred?.username ?? alert.host.username ?? lastUsername
+        // First non-empty of: cached username, the host's, the last one typed;
+        // else the local account. lastUsername is never nil, but it (or a saved
+        // username) could be empty — fall back so the reconnect always has a user.
+        let username =
+            [cred?.username, alert.host.username, lastUsername]
+            .compactMap { $0 }.first { !$0.isEmpty } ?? NSUserName()
         openSession(
             host: alert.host, username: username, password: cred?.password,
             acceptNewHostKey: true)
