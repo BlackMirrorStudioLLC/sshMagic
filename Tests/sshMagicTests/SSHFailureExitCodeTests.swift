@@ -19,5 +19,6 @@ final class SSHFailureExitCodeTests: XCTestCase {
         XCTAssertFalse(TerminalSession.isSSHFailure(exitCode: 256))  // remote `exit 1` (raw 0x0100)
         XCTAssertFalse(TerminalSession.isSSHFailure(exitCode: 9))  // SIGKILL-style status
         XCTAssertFalse(TerminalSession.isSSHFailure(exitCode: nil))  // IO error
+        XCTAssertFalse(TerminalSession.isSSHFailure(exitCode: -1))  // negative: no sign-extension hit
     }
 }

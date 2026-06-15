@@ -44,7 +44,10 @@ final class TerminalSession: ObservableObject, Identifiable {
     /// logout (0), a signal death, and a nil IO error. Pure + nonisolated so it's
     /// unit-testable and documents the (otherwise undocumented) encoding contract.
     nonisolated static func isSSHFailure(exitCode: Int32?) -> Bool {
-        guard let code = exitCode else { return false }
+        // `code > 0` guards the arithmetic right-shift: a negative code (which
+        // POSIX wait status never yields, but is theoretically deliverable)
+        // would sign-extend so `(code >> 8) & 0xFF` spuriously hits 255.
+        guard let code = exitCode, code > 0 else { return false }
         return code == 255 || (code >> 8) & 0xFF == 255
     }
 

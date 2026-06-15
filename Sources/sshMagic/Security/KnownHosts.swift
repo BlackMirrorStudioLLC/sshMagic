@@ -103,7 +103,10 @@ enum KnownHosts {
         do {
             try process.run()
         } catch {
-            return false
+            // Couldn't even check — assume the key may still be present so we
+            // report removal *failure* rather than a false "removed" (which would
+            // reconnect against a stale key).
+            return true
         }
         process.waitUntilExit()
         return process.terminationStatus == 0
