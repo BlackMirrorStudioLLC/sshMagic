@@ -26,6 +26,13 @@ enum KnownHosts {
     /// The "overwrite changed key" flow uses it to reconnect only when the old
     /// key is truly gone — a failed removal (e.g. read-only `known_hosts`) would
     /// otherwise hit the stale key again and loop the prompt.
+    ///
+    /// Gap (same as `HostKeyCheck.hasStoredKey`): both `-R` and the `-F`
+    /// verification only touch the default `~/.ssh/known_hosts`. If the user
+    /// redirects `UserKnownHostsFile` in ssh_config, `-R` removes nothing from
+    /// the real file yet `-F` reports the key absent, so we'd report success and
+    /// the reconnect would still fail on the stale key. The `acceptNewHostKey`
+    /// guard prevents a prompt loop, so the worst case is one failed reconnect.
     static func forget(_ host: Host, completion: (@MainActor @Sendable (Bool) -> Void)? = nil) {
         let bare = host.hostname
         let bracket = "[\(host.hostname)]:\(host.port)"

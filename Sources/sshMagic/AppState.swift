@@ -238,6 +238,12 @@ final class AppState: ObservableObject {
     /// was caused by a *changed* host key (a key we trusted no longer matches).
     /// If so, raise the overwrite prompt. Anything else (auth failure, network
     /// drop, unknown host) returns nil and is left as the normal closed tab.
+    ///
+    /// Tradeoff: a wrong password on a *known* host also exits 255, so it fires a
+    /// probe that returns nil — an accepted cost. The probe is a single extra
+    /// connection (sub-second on a reachable host; bounded by ConnectTimeout=3 on
+    /// an unreachable one), and distinguishing auth-failure from key-change
+    /// without it would mean scraping the terminal buffer for the banner.
     private func diagnoseHostKey(for session: TerminalSession) {
         // A post-overwrite reconnect (acceptNewHostKey) must never re-trigger the
         // prompt: if it still fails that's a deeper problem, not a key change to
