@@ -58,6 +58,12 @@ enum HostKeyCheck {
     /// (Same caveat for a bare IPv6 address whose entry is stored in `[::1]`
     /// bracket form — `-F ::1` won't match it.)
     private static func hasStoredKey(for host: Host) async -> Bool {
+        // A valid hostname never starts with `-`. We can't guard with `-F --
+        // <host>`: like `-R`, ssh-keygen takes -F's operand directly and rejects
+        // `--` with "Too many arguments" (verified). So just skip a leading-dash
+        // name rather than risk it being read as a flag. The `[host]:port` form
+        // below starts with `[`, so it's safe.
+        guard !host.hostname.hasPrefix("-") else { return false }
         if await runSucceeds("/usr/bin/ssh-keygen", ["-F", host.hostname]) { return true }
         if host.port != 22 {
             return await runSucceeds(
