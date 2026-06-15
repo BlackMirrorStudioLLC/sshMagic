@@ -55,8 +55,6 @@ enum HostKeyCheck {
     /// ssh_config, we'll report "no stored key", skip the probe, and not raise
     /// the overwrite prompt. The connection itself stays safe — ssh still
     /// rejects the changed key — the user just doesn't get the one-click fix.
-    /// (Same caveat for a bare IPv6 address whose entry is stored in `[::1]`
-    /// bracket form — `-F ::1` won't match it.)
     private static func hasStoredKey(for host: Host) async -> Bool {
         // A valid hostname never starts with `-`. We can't guard with `-F --
         // <host>`: like `-R`, ssh-keygen takes -F's operand directly and rejects
@@ -65,11 +63,11 @@ enum HostKeyCheck {
         // below starts with `[`, so it's safe.
         guard !host.hostname.hasPrefix("-") else { return false }
         if await runSucceeds("/usr/bin/ssh-keygen", ["-F", host.hostname]) { return true }
-        if host.port != 22 {
-            return await runSucceeds(
-                "/usr/bin/ssh-keygen", ["-F", "[\(host.hostname)]:\(host.port)"])
-        }
-        return false
+        // Also try the bracketed `[host]:port` form. ssh stores this for a
+        // non-default port, and for IPv6 addresses even on 22 — so always check
+        // it as a fallback, not just when the port differs.
+        return await runSucceeds(
+            "/usr/bin/ssh-keygen", ["-F", "[\(host.hostname)]:\(host.port)"])
     }
 
     /// Pure classifier over `ssh`'s stderr — factored out so it can be unit

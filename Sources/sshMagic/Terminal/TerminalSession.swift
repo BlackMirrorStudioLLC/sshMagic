@@ -30,9 +30,10 @@ final class TerminalSession: ObservableObject, Identifiable {
     /// Write-once (set at init) so a reused session can't silently inherit it.
     let acceptNewHostKey: Bool
 
-    /// Called when `ssh` exits with its own error code (255) — i.e. a connection
-    /// failure rather than a normal remote logout. AppState uses this to probe
-    /// for a changed host key and offer to overwrite it.
+    /// Called when `ssh` exits with its own error code 255 (a connection/host-key
+    /// failure, in either of SwiftTerm's raw/extracted status encodings) — not a
+    /// normal logout or a remote command's own non-zero exit. AppState uses this
+    /// to probe for a changed host key and offer to overwrite it.
     var onEarlyExit: (@MainActor (Int32?) -> Void)?
 
     /// The file browser model. Cheap to create (it doesn't open an SFTP
