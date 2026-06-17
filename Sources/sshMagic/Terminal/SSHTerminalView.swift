@@ -59,15 +59,27 @@ struct SSHTerminalView: NSViewRepresentable {
         var env = Terminal.getEnvironmentVariables(termName: "xterm-256color")
         env.append("LANG=\(currentLang())")
 
-        // With a stored password, supply it via SSH_ASKPASS. We also auto-accept
-        // new host keys: under SSH_ASKPASS_REQUIRE=force the yes/no host-key
-        // prompt would otherwise be answered with the password and abort the
-        // connection. `accept-new` still rejects *changed* keys, so a MITM swap
-        // is caught.
+        // Auto-accept *new* host keys when either we're feeding a password (under
+        // SSH_ASKPASS_REQUIRE=force the yes/no host-key prompt would otherwise be
+        // answered with the password and abort the connection) or we're
+        // reconnecting right after the user chose to overwrite a changed key.
+        // `accept-new` still rejects *changed* keys, so a MITM swap is caught and
+        // surfaced as the overwrite prompt rather than silently trusted.
+        // ssh honours the *last* `-o` for a duplicate key, and these `options`
+        // precede `host.sshArguments`. That's safe today because sshArguments
+        // only ever carries `-p`/`--`/destination — no `-o` — so nothing can
+        // override accept-new. If a future "advanced options" feature lets a host
+        // carry custom `-o` flags, inject accept-new *after* them (which means
+        // restructuring sshArguments, since it ends with `-- destination`).
+        let hasPassword = !(session.password ?? "").isEmpty
+        if hasPassword || session.acceptNewHostKey {
+            options += ["-o", "StrictHostKeyChecking=accept-new"]
+        }
+
+        // With a stored password, supply it via SSH_ASKPASS.
         if let password = session.password, !password.isEmpty,
             let askpass = AskPass.make(password: password)
         {
-            options += ["-o", "StrictHostKeyChecking=accept-new"]
             env.append(contentsOf: askpass.environment)
             context.coordinator.tempDir = askpass.cleanupURL
         }
@@ -130,6 +142,11 @@ struct SSHTerminalView: NSViewRepresentable {
             Task { @MainActor in
                 self.session.isConnected = false
                 self.session.exitCode = exitCode
+                // Probe for a changed host key only on ssh's own failure code 255
+                // (see TerminalSession.isSSHFailure for the dual-encoding detail).
+                if TerminalSession.isSSHFailure(exitCode: exitCode) {
+                    self.session.onEarlyExit?(exitCode)
+                }
             }
         }
     }

@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import OSLog
 
 /// Top-level app model: owns discovery, the user's saved hosts, and the open
 /// terminal tabs. A single instance is injected into the SwiftUI environment.
@@ -12,6 +13,34 @@ final class AppState: ObservableObject {
         let password: String?
     }
 
+    /// Describes a detected host-key change awaiting the user's decision.
+    struct HostKeyAlert: Identifiable, Sendable {
+        let id = UUID()
+        let sessionID: TerminalSession.ID
+        let host: Host
+        /// The fingerprint of the key the server now presents (for verification).
+        let fingerprint: String?
+    }
+
+    /// What the single host-key `.alert` should currently show. The two cases are
+    /// mutually exclusive, so one `.alert` modifier can present either.
+    enum ActiveAlert: Identifiable {
+        case changedKey(HostKeyAlert)
+        case removalFailed(id: UUID, message: String)
+
+        var id: String {
+            switch self {
+            case .changedKey(let alert): return "changed-\(alert.id)"
+            // Carry a UUID so two consecutive removal-failure alerts have
+            // distinct ids — SwiftUI skips re-presenting if the id is unchanged.
+            case .removalFailed(let id, _): return "removal-\(id)"
+            }
+        }
+    }
+
+    private static let log = Logger(
+        subsystem: "com.blackmirrorstudio.sshmagic", category: "appstate")
+
     let discovery = DiscoveryManager()
 
     @Published var savedHosts: [Host] = []
@@ -21,6 +50,10 @@ final class AppState: ObservableObject {
     }
     /// Non-nil while the credential sheet should be shown for this host.
     @Published var pendingConnect: Host?
+    /// The host-key alert currently on screen, if any. A single property (and a
+    /// single SwiftUI `.alert`) presents either variant — chaining two `.alert`
+    /// modifiers on one view can shadow one of them.
+    @Published var activeAlert: ActiveAlert?
     /// Sessions whose SFTP file browser is currently visible.
     @Published var filesVisible: Set<TerminalSession.ID> = []
     /// Whether the remote-monitoring stats bar is shown under terminals.
@@ -35,6 +68,9 @@ final class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     /// Logins entered this run, so reconnecting doesn't re-prompt.
     private var sessionCredentials: [String: Credentials] = [:]
+    /// Alerts detected while another was already on screen, presented serially
+    /// as each is dismissed rather than dropped or clobbered.
+    private var pendingAlerts: [ActiveAlert] = []
     /// Hosts with a biometric unlock currently in flight, so a rapid second
     /// connect request (e.g. a double-click) doesn't fire a second Touch ID
     /// prompt and open a duplicate tab.
@@ -178,14 +214,133 @@ final class AppState: ObservableObject {
     }
 
     /// Open the actual terminal tab with a resolved login and focus it.
-    private func openSession(host: Host, username: String, password: String?) {
+    private func openSession(
+        host: Host, username: String, password: String?, acceptNewHostKey: Bool = false
+    ) {
         var resolved = host
         resolved.username = username
-        let session = TerminalSession(host: resolved, password: password)
+        let session = TerminalSession(
+            host: resolved, password: password, acceptNewHostKey: acceptNewHostKey)
+        // On an ssh-level failure, probe for a changed host key (see below).
+        session.onEarlyExit = { [weak self, weak session] _ in
+            guard let self, let session else { return }
+            self.diagnoseHostKey(for: session)
+        }
         sessions.append(session)
         // Setting the selection starts this tab's stats poller (and pauses the
         // previously-selected one) via updateActiveStatsPolling().
         selectedSessionID = session.id
+    }
+
+    // MARK: Changed host keys
+
+    /// After an ssh-level failure, run a quick non-interactive probe to see if it
+    /// was caused by a *changed* host key (a key we trusted no longer matches).
+    /// If so, raise the overwrite prompt. Anything else (auth failure, network
+    /// drop, unknown host) returns nil and is left as the normal closed tab.
+    ///
+    /// Tradeoff: a wrong password on a *known* host also exits 255, so it fires a
+    /// probe that returns nil — an accepted cost. The probe is a single extra
+    /// connection (sub-second on a reachable host; bounded by ConnectTimeout=3 on
+    /// an unreachable one), and distinguishing auth-failure from key-change
+    /// without it would mean scraping the terminal buffer for the banner.
+    private func diagnoseHostKey(for session: TerminalSession) {
+        // A post-overwrite reconnect (acceptNewHostKey) must never re-trigger the
+        // prompt: if it still fails that's a deeper problem, not a key change to
+        // re-ask about. This is the definitive guard against the prompt looping,
+        // even if `ssh-keygen -R` reported success without actually removing the
+        // entry (e.g. a locked known_hosts).
+        guard !session.acceptNewHostKey else { return }
+        guard sessions.contains(where: { $0.id == session.id }) else { return }
+        let host = session.host
+        let sessionID = session.id
+        Task { @MainActor in
+            guard let changed = await HostKeyCheck.detectChangedKey(for: host),
+                self.sessions.contains(where: { $0.id == sessionID })
+            else { return }
+            let info = HostKeyAlert(
+                sessionID: sessionID, host: host, fingerprint: changed.newFingerprint)
+            self.presentOrQueue(.changedKey(info))
+        }
+    }
+
+    /// Show `alert` now if nothing is up, else queue it behind the current one
+    /// so a second detection (or a removal-failure landing during another
+    /// alert's async window) is never dropped or clobbered.
+    private func presentOrQueue(_ alert: ActiveAlert) {
+        if activeAlert == nil {
+            activeAlert = alert
+        } else {
+            pendingAlerts.append(alert)
+        }
+    }
+
+    func dismissAlert() {
+        activeAlert = nil
+        presentNextAlert()
+    }
+
+    /// Forget the stale key, then reconnect (auto-accepting the new key). The
+    /// reconnect is deferred until `ssh-keygen -R` finishes so it can't race the
+    /// old entry — and only happens if the removal actually succeeded, so a
+    /// failed removal surfaces an error instead of looping the prompt.
+    func overwriteHostKeyAndReconnect(_ alert: HostKeyAlert) {
+        activeAlert = nil
+        KnownHosts.forget(alert.host) { [weak self] removed in
+            guard let self else { return }
+            if removed {
+                self.reconnectAfterOverwrite(alert)
+                self.presentNextAlert()
+            } else {
+                // presentOrQueue (not a bare assignment): a concurrent session's
+                // changed-key alert may have filled the slot during the async
+                // removal, and we must not clobber it.
+                self.presentOrQueue(
+                    .removalFailed(
+                        id: UUID(),
+                        message: "Couldn't remove the old host key for \(alert.host.displayName). "
+                            + "Your known_hosts file may be read-only — remove the entry manually, "
+                            + "then reconnect."))
+            }
+        }
+    }
+
+    /// Present the next queued alert, if any. Deferred to a later main-actor tick
+    /// so SwiftUI registers the dismissal of the current alert before the next is
+    /// set (otherwise the re-present can be missed).
+    private func presentNextAlert() {
+        guard activeAlert == nil, !pendingAlerts.isEmpty else { return }
+        Task { @MainActor in
+            guard self.activeAlert == nil else { return }
+            while !self.pendingAlerts.isEmpty {
+                let next = self.pendingAlerts.removeFirst()
+                // Skip a changed-key alert whose tab has since closed; always
+                // surface a removal-failure.
+                if case .changedKey(let info) = next,
+                    !self.sessions.contains(where: { $0.id == info.sessionID })
+                {
+                    continue
+                }
+                self.activeAlert = next
+                return
+            }
+        }
+    }
+
+    private func reconnectAfterOverwrite(_ alert: HostKeyAlert) {
+        if let dead = sessions.first(where: { $0.id == alert.sessionID }) {
+            closeSession(dead)
+        }
+        let cred = sessionCredentials[alert.host.id]
+        // First non-empty of: cached username, the host's, the last one typed;
+        // else the local account. lastUsername is never nil, but it (or a saved
+        // username) could be empty — fall back so the reconnect always has a user.
+        let username =
+            [cred?.username, alert.host.username, lastUsername]
+            .compactMap { $0 }.first { !$0.isEmpty } ?? NSUserName()
+        openSession(
+            host: alert.host, username: username, password: cred?.password,
+            acceptNewHostKey: true)
     }
 
     /// Show or hide the remote-monitoring bar, starting/stopping the pollers so
