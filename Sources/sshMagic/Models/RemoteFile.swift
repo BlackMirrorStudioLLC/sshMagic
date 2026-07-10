@@ -52,20 +52,42 @@ extension RemoteFile {
 
     /// Parse a single `ls -l`-style line, or nil if it isn't one.
     static func parse(line: String) -> RemoteFile? {
-        let tokens = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
         // perms links owner group size mon day time/year name...
-        guard tokens.count >= 9 else { return nil }
+        // The 8 metadata fields are tokenized, but the name (everything after
+        // them) is taken VERBATIM from the line: splitting and rejoining would
+        // collapse runs of spaces/tabs inside the filename, silently renaming
+        // it in the model — and every path later built from that name (rm,
+        // get, edit) would target a different remote file.
+        func isSeparator(_ c: Character) -> Bool { c == " " || c == "\t" }
+        var fields: [Substring] = []
+        var index = line.startIndex
+        while fields.count < 8, index < line.endIndex {
+            while index < line.endIndex, isSeparator(line[index]) {
+                index = line.index(after: index)
+            }
+            let start = index
+            while index < line.endIndex, !isSeparator(line[index]) {
+                index = line.index(after: index)
+            }
+            guard start < index else { break }
+            fields.append(line[start..<index])
+        }
+        // Skip the separator run between the last metadata field and the name.
+        while index < line.endIndex, isSeparator(line[index]) {
+            index = line.index(after: index)
+        }
+        guard fields.count == 8, index < line.endIndex else { return nil }
 
-        let perms = tokens[0]
+        let perms = fields[0]
         guard perms.count == 10 || perms.count == 11, let type = perms.first else { return nil }
         guard "dl-bcps".contains(type) else { return nil }
 
         let isDirectory = type == "d"
         let isSymlink = type == "l"
-        let size = Int64(tokens[4]) ?? 0
-        let modified = tokens[5...7].joined(separator: " ")
+        let size = Int64(fields[4]) ?? 0
+        let modified = fields[5...7].joined(separator: " ")
 
-        var name = tokens[8...].joined(separator: " ")
+        var name = String(line[index...])
         // Symlinks render as "name -> target"; keep just the link name.
         if isSymlink, let arrow = name.range(of: " -> ") {
             name = String(name[..<arrow.lowerBound])
