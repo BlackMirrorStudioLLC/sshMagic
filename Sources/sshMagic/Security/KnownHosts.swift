@@ -14,10 +14,8 @@ enum KnownHosts {
     /// from. Failures are logged (not surfaced): if the key isn't removed, the
     /// only consequence is a host-key prompt on a future reconnect.
     ///
-    /// We try BOTH the bare `hostname` and the bracketed `[hostname]:port` forms,
-    /// always — ssh stores a non-default port (and IPv6 even on 22) only as
-    /// `[host]:port`, and a plain host as the bare name; we don't know which up
-    /// front.
+    /// The forms tried are decided by `removalTargets(for:)` — see there for why
+    /// a non-default-port host must NOT touch the bare `hostname` entry.
     ///
     /// `completion` runs on the main actor reporting whether the entry is
     /// actually GONE afterward (verified with `ssh-keygen -F`), not whether `-R`
@@ -34,8 +32,7 @@ enum KnownHosts {
     /// the reconnect would still fail on the stale key. The `acceptNewHostKey`
     /// guard prevents a prompt loop, so the worst case is one failed reconnect.
     static func forget(_ host: Host, completion: (@MainActor @Sendable (Bool) -> Void)? = nil) {
-        let bare = host.hostname
-        let bracket = "[\(host.hostname)]:\(host.port)"
+        let targets = removalTargets(for: host)
 
         DispatchQueue.global(qos: .utility).async {
             var removed = true
@@ -46,22 +43,37 @@ enum KnownHosts {
             }
             // A valid hostname never starts with `-`. We can't pass `-R -- <host>`
             // (ssh-keygen rejects `--` with "Too many arguments" — `-R` takes its
-            // operand directly), so refuse a leading-dash name outright. The
-            // bracket form starts with `[`, so it's always safe.
-            guard !bare.hasPrefix("-") else {
-                log.error("Refusing ssh-keygen -R for a leading-dash host: \(bare, privacy: .public)")
+            // operand directly), so refuse a leading-dash name outright. Only the
+            // bare form can trip this; the bracket form always starts with `[`.
+            guard !targets.contains(where: { $0.hasPrefix("-") }) else {
+                log.error(
+                    "Refusing ssh-keygen -R for a leading-dash host: \(host.hostname, privacy: .public)")
                 removed = false
                 return
             }
 
-            for target in [bare, bracket] {
+            for target in targets {
                 runKeygenRemove(target)
             }
 
             // Success = the entry no longer exists, regardless of `-R`'s exit
-            // code. If either form still resolves, the removal didn't take.
-            removed = !keyPresent(bare) && !keyPresent(bracket)
+            // code. If any tried form still resolves, the removal didn't take.
+            removed = targets.allSatisfy { !keyPresent($0) }
         }
+    }
+
+    /// The `ssh-keygen -R`/`-F` operands for a host. ssh records a non-default
+    /// port only as `[host]:port` — the bare `hostname` line belongs to the
+    /// port-22 endpoint, which may be a *different* saved host on the same
+    /// machine. Touching the bare form for a non-22 host would silently delete
+    /// that other endpoint's trust anchor, and the next port-22 connect (made
+    /// with `StrictHostKeyChecking=accept-new`) would then trust whatever key
+    /// the network presents. So: bare only when this host IS the port-22 one.
+    /// On 22 the bracket form is also tried — some servers' IPv6 entries are
+    /// recorded bracketed even on the default port, and a miss is harmless.
+    static func removalTargets(for host: Host) -> [String] {
+        let bracket = "[\(host.hostname)]:\(host.port)"
+        return host.port == 22 ? [host.hostname, bracket] : [bracket]
     }
 
     /// Run `ssh-keygen -R <target>`, discarding output and logging any error.

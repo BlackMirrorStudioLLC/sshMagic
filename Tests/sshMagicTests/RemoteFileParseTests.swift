@@ -72,6 +72,23 @@ final class RemoteFileParseTests: XCTestCase {
         XCTAssertTrue(files.contains { $0.name == "My Projects" && $0.isDirectory })
     }
 
+    /// Names must be taken VERBATIM from the listing line. Tokenizing and
+    /// rejoining with single spaces would silently rename "a  b.txt" to
+    /// "a b.txt" — colliding two distinct rows (id is the name) and pointing
+    /// delete/download at the wrong remote file.
+    func testNamesWithConsecutiveSpacesAndTabsStayVerbatim() {
+        let listing = """
+            -rw-r--r--    1 astro astro  100 Jun 12 13:59 a  b.txt
+            -rw-r--r--    1 astro astro  100 Jun 12 13:59 a b.txt
+            -rw-r--r--    1 astro astro  100 Jun 12 13:59 tab\tname.txt
+            """
+        let names = RemoteFile.parse(lsOutput: listing).map(\.name)
+        XCTAssertTrue(names.contains("a  b.txt"))
+        XCTAssertTrue(names.contains("a b.txt"))
+        XCTAssertTrue(names.contains("tab\tname.txt"))
+        XCTAssertEqual(Set(names).count, 3, "rows must remain distinct")
+    }
+
     func testNonListingLinesIgnored() {
         let junk = """
             Connected to host.

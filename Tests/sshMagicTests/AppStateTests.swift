@@ -113,6 +113,45 @@ final class AppStateTests: XCTestCase {
         app.closeSession(second)
     }
 
+    /// The credential sheet is also the fallback after a cancelled Touch ID
+    /// prompt (username pre-filled, password blank, Remember defaulted on).
+    /// Submitting it blank means "prompt me in the terminal" — it must NOT
+    /// delete the existing Keychain password.
+    func testBlankPasswordWithRememberPreservesStoredSecret() {
+        let app = AppState()
+        let host = Host(hostname: "10.9.9.42", source: .scan)
+        let acct = KeychainStore.account(username: "deploy", hostID: host.id)
+        KeychainStore.setPassword("hunter2", account: acct)
+        defer { KeychainStore.deletePassword(account: acct) }
+
+        app.connect(host: host, username: "deploy", password: "", remember: true)
+
+        XCTAssertEqual(KeychainStore.password(account: acct), "hunter2")
+
+        // Cleanup the saved host this test persisted.
+        if let saved = app.savedHosts.first(where: { $0.id == host.id }) {
+            app.removeSavedHost(saved)
+        }
+    }
+
+    /// One malformed entry in hosts.json must not discard every saved host:
+    /// the salvage decoder drops only the entries that fail. The bad entries
+    /// sit DIRECTLY before good ones so a skip that advanced one entry too far
+    /// would visibly drop "a" or "c" — not just the junk.
+    func testLossyArraySalvagesRemainingHostsAroundBadEntries() throws {
+        let json = """
+            [
+                {"hostname": "b", "port": "not-a-number", "displayName": "b", "source": "manual"},
+                {"hostname": "a", "port": 22, "displayName": "a", "source": "manual"},
+                42,
+                {"hostname": "c", "port": 2222, "displayName": "c", "source": "bonjour"}
+            ]
+            """
+        let salvaged = try JSONDecoder().decode(
+            LossyArray<sshMagic.Host>.self, from: Data(json.utf8))
+        XCTAssertEqual(salvaged.elements.map(\.hostname), ["a", "c"])
+    }
+
     func testSuggestedUsernameFallsBackToLastUsed() {
         let app = AppState()
         let host = Host(hostname: "10.9.9.11", source: .scan)

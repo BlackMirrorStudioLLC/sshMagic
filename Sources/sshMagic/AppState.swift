@@ -193,11 +193,14 @@ final class AppState: ObservableObject {
             var saved = host
             saved.username = username
             upsertSavedHost(saved)
-            let acct = KeychainStore.account(username: username, hostID: host.id)
+            // A blank password must NOT delete an existing Keychain entry: this
+            // sheet is also the fallback after a cancelled Touch ID prompt
+            // (username pre-filled, Remember defaulted on), where a reflexive
+            // Enter means "prompt me in the terminal" — not "destroy the saved
+            // secret". Passwords are removed by deleting the saved host.
             if let pw {
-                KeychainStore.setPassword(pw, account: acct)
-            } else {
-                KeychainStore.deletePassword(account: acct)
+                KeychainStore.setPassword(
+                    pw, account: KeychainStore.account(username: username, hostID: host.id))
             }
         }
         openSession(host: host, username: username, password: pw)
@@ -464,10 +467,30 @@ final class AppState: ObservableObject {
     }
 
     private func loadSavedHosts() {
-        guard let data = try? Data(contentsOf: savedHostsURL),
-            let decoded = try? JSONDecoder().decode([Host].self, from: data)
-        else { return }
-        savedHosts = decoded
+        guard FileManager.default.fileExists(atPath: savedHostsURL.path) else { return }
+        guard let data = try? Data(contentsOf: savedHostsURL) else {
+            Self.log.error("hosts.json exists but could not be read; starting empty")
+            return
+        }
+        if let decoded = try? JSONDecoder().decode([Host].self, from: data) {
+            savedHosts = decoded
+            return
+        }
+        // The file no longer decodes as a whole (corruption, or a schema change
+        // without a migration default). Loading a partial list is acceptable —
+        // silently OVERWRITING the file on the next save is not. Preserve the
+        // original bytes first, then salvage the entries that still decode.
+        // Epoch for humans; the UUID fragment prevents same-second collisions.
+        let backup = savedHostsURL.appendingPathExtension(
+            "corrupt-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8))")
+        try? data.write(to: backup, options: .atomic)
+        savedHosts = (try? JSONDecoder().decode(LossyArray<Host>.self, from: data))?.elements ?? []
+        let salvaged = savedHosts.count
+        Self.log.error(
+            """
+            hosts.json failed to decode; salvaged \(salvaged) host(s), \
+            original preserved as \(backup.lastPathComponent, privacy: .public)
+            """)
     }
 
     private func persistSavedHosts() {
