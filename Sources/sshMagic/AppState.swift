@@ -193,13 +193,11 @@ final class AppState: ObservableObject {
             var saved = host
             saved.username = username
             upsertSavedHost(saved)
-            // Only a typed password is stored. A blank one must NOT delete an
-            // existing Keychain entry: this sheet is also the fallback after a
-            // cancelled/failed Touch ID prompt (pre-filled username, blank
-            // password, Remember defaulted on), where a reflexive Enter means
-            // "just prompt me in the terminal" — destroying the saved secret
-            // there would be silent, permanent data loss. Stored passwords are
-            // removed by deleting the saved host.
+            // A blank password must NOT delete an existing Keychain entry: this
+            // sheet is also the fallback after a cancelled Touch ID prompt
+            // (username pre-filled, Remember defaulted on), where a reflexive
+            // Enter means "prompt me in the terminal" — not "destroy the saved
+            // secret". Passwords are removed by deleting the saved host.
             if let pw {
                 KeychainStore.setPassword(
                     pw, account: KeychainStore.account(username: username, hostID: host.id))
@@ -478,49 +476,24 @@ final class AppState: ObservableObject {
             savedHosts = decoded
             return
         }
-        // The file exists but no longer decodes as a whole (corruption, or a
-        // schema change without a migration default). Starting the session with
-        // a partial list is acceptable — silently OVERWRITING the file on the
-        // next save is not: that turns one bad entry into permanent loss of
-        // every saved host. Preserve the original bytes first, then salvage the
-        // entries that still decode.
+        // The file no longer decodes as a whole (corruption, or a schema change
+        // without a migration default). Loading a partial list is acceptable —
+        // silently OVERWRITING the file on the next save is not. Preserve the
+        // original bytes first, then salvage the entries that still decode.
         let backup = savedHostsURL.appendingPathExtension(
             "corrupt-\(Int(Date().timeIntervalSince1970))")
         try? data.write(to: backup, options: .atomic)
         savedHosts = (try? JSONDecoder().decode(LossyArray<Host>.self, from: data))?.elements ?? []
+        let salvaged = savedHosts.count
         Self.log.error(
-            "hosts.json failed to decode; salvaged \(self.savedHosts.count) host(s), original preserved as \(backup.lastPathComponent, privacy: .public)")
+            """
+            hosts.json failed to decode; salvaged \(salvaged) host(s), \
+            original preserved as \(backup.lastPathComponent, privacy: .public)
+            """)
     }
 
     private func persistSavedHosts() {
         guard let data = try? JSONEncoder().encode(savedHosts) else { return }
         try? data.write(to: savedHostsURL, options: .atomic)
-    }
-}
-
-/// Decodes a JSON array element-by-element, dropping entries that fail instead
-/// of failing the whole array — used to salvage `hosts.json` when one bad entry
-/// would otherwise discard every saved host.
-struct LossyArray<Element: Decodable>: Decodable {
-    let elements: [Element]
-
-    init(from decoder: Decoder) throws {
-        var container = try decoder.unkeyedContainer()
-        var decoded: [Element] = []
-        while !container.isAtEnd {
-            if let element = try? container.decode(Element.self) {
-                decoded.append(element)
-            } else {
-                // Decode (and discard) a value that always succeeds, purely to
-                // advance the container past the bad entry.
-                _ = try? container.decode(Skip.self)
-            }
-        }
-        elements = decoded
-    }
-
-    /// Decodes successfully from ANY value without reading it.
-    private struct Skip: Decodable {
-        init(from decoder: Decoder) throws {}
     }
 }
