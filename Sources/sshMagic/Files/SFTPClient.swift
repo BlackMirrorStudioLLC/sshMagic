@@ -254,8 +254,21 @@ actor SFTPClient {
                 if let input { inPipe.fileHandleForWriting.write(Data(input.utf8)) }
                 inPipe.fileHandleForWriting.closeFile()
 
+                // Drain stdout and stderr CONCURRENTLY. Reading them one after
+                // the other deadlocks: a child that fills the ~64KB stderr pipe
+                // buffer while stdout is still open blocks on its next stderr
+                // write and never exits, and our stdout read never sees EOF —
+                // e.g. a recursive delete emitting thousands of "Permission
+                // denied" lines. The semaphore orders errData's write before
+                // our read of it.
+                var errData = Data()
+                let errDrained = DispatchSemaphore(value: 0)
+                DispatchQueue.global(qos: .userInitiated).async {
+                    errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    errDrained.signal()
+                }
                 let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                errDrained.wait()
                 process.waitUntilExit()
                 continuation.resume(
                     returning: ProcessResult(
