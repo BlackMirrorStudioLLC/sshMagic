@@ -259,16 +259,18 @@ actor SFTPClient {
                 // buffer while stdout is still open blocks on its next stderr
                 // write and never exits, and our stdout read never sees EOF —
                 // e.g. a recursive delete emitting thousands of "Permission
-                // denied" lines. The semaphore orders errData's write before
-                // our read of it.
-                var errData = Data()
+                // denied" lines. The semaphore orders the box's write before
+                // our read of it (the Box exists because mutating a captured
+                // `var` from a @Sendable closure is a strict-concurrency error).
+                let errBox = Box(Data())
                 let errDrained = DispatchSemaphore(value: 0)
                 DispatchQueue.global(qos: .userInitiated).async {
-                    errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    errBox.value = errPipe.fileHandleForReading.readDataToEndOfFile()
                     errDrained.signal()
                 }
                 let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
                 errDrained.wait()
+                let errData = errBox.value
                 process.waitUntilExit()
                 continuation.resume(
                     returning: ProcessResult(
@@ -279,4 +281,12 @@ actor SFTPClient {
             }
         }
     }
+}
+
+/// Minimal mutable cell for handing a value out of a @Sendable closure without
+/// mutating a captured `var` (a strict-concurrency error). Synchronization is
+/// external — the semaphore in `run` orders the write before the read.
+private final class Box<T>: @unchecked Sendable {
+    var value: T
+    init(_ value: T) { self.value = value }
 }

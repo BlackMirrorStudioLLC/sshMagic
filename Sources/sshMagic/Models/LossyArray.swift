@@ -14,8 +14,10 @@ struct LossyArray<Element: Decodable>: Decodable {
                 decoded.append(element)
             } else {
                 // Decode (and discard) a value that always succeeds, purely to
-                // advance the container past the bad entry.
-                _ = try? container.decode(Skip.self)
+                // advance the container past the bad entry. If even that fails
+                // (container-level error), bail out rather than spin forever on
+                // an index that can no longer advance.
+                guard (try? container.decode(Skip.self)) != nil else { break }
             }
         }
         elements = decoded

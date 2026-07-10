@@ -480,8 +480,9 @@ final class AppState: ObservableObject {
         // without a migration default). Loading a partial list is acceptable —
         // silently OVERWRITING the file on the next save is not. Preserve the
         // original bytes first, then salvage the entries that still decode.
+        // Epoch for humans; the UUID fragment prevents same-second collisions.
         let backup = savedHostsURL.appendingPathExtension(
-            "corrupt-\(Int(Date().timeIntervalSince1970))")
+            "corrupt-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8))")
         try? data.write(to: backup, options: .atomic)
         savedHosts = (try? JSONDecoder().decode(LossyArray<Host>.self, from: data))?.elements ?? []
         let salvaged = savedHosts.count

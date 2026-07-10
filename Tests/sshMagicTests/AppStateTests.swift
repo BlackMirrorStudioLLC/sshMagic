@@ -135,12 +135,14 @@ final class AppStateTests: XCTestCase {
     }
 
     /// One malformed entry in hosts.json must not discard every saved host:
-    /// the salvage decoder drops only the entries that fail.
+    /// the salvage decoder drops only the entries that fail. The bad entries
+    /// sit DIRECTLY before good ones so a skip that advanced one entry too far
+    /// would visibly drop "a" or "c" — not just the junk.
     func testLossyArraySalvagesRemainingHostsAroundBadEntries() throws {
         let json = """
             [
-                {"hostname": "a", "port": 22, "displayName": "a", "source": "manual"},
                 {"hostname": "b", "port": "not-a-number", "displayName": "b", "source": "manual"},
+                {"hostname": "a", "port": 22, "displayName": "a", "source": "manual"},
                 42,
                 {"hostname": "c", "port": 2222, "displayName": "c", "source": "bonjour"}
             ]
