@@ -37,13 +37,13 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         if: steps.gate.outputs.skip != 'true'
         with:
           fetch-depth: 1
           persist-credentials: false
 
-      - uses: anthropics/claude-code-action@521136812280ae7ef256e06045655b9da02793f0  # v1
+      - uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2  # v1
         if: steps.gate.outputs.skip != 'true'
         with:
           # Subscription (Pro/Max) auth. Generate locally with `claude setup-token`
